@@ -64,10 +64,6 @@ class SettingsStore {
 	isInitialized = $state(false);
 	userOverrides = $state<Set<string>>(new Set());
 
-	// True until a config exists in localStorage; gates the one-time
-	// application of server ui_settings defaults for new users.
-	private isFirstVisit = false;
-
 	/**
 	 *
 	 *
@@ -122,10 +118,6 @@ class SettingsStore {
 
 		try {
 			const storedConfigRaw = localStorage.getItem(CONFIG_LOCALSTORAGE_KEY);
-
-			// First visit: no stored config yet. Server ui_settings apply once in
-			// this state, then the user's config diverges freely.
-			this.isFirstVisit = storedConfigRaw === null;
 
 			const savedVal = JSON.parse(storedConfigRaw || '{}');
 
@@ -334,7 +326,6 @@ class SettingsStore {
 	 */
 	syncWithServerDefaults(): void {
 		const propsDefaults = this.getServerDefaults();
-		if (Object.keys(propsDefaults).length === 0) return;
 
 		const uiSettings = serverStore.uiSettings;
 		const uiSettingsKeys = new Set(uiSettings ? Object.keys(uiSettings) : []);
@@ -355,12 +346,12 @@ class SettingsStore {
 			}
 		}
 
-		// UI settings are the admin's defaults for new users: applied once on
-		// the first visit, never on later loads, so the user's config can
-		// diverge. "Reset to Default" is the explicit way back to the baseline.
-		if (uiSettings && this.isFirstVisit) {
-			this.isFirstVisit = false;
-
+		// UI settings are the admin's baseline: applied on every load for keys the
+		// user has not overridden, so a server-side config change reaches existing
+		// browser profiles too. Gating this on propsDefaults being non-empty would
+		// also drop the baseline entirely in router mode, where /props carries no
+		// default_generation_settings.params.
+		if (uiSettings) {
 			for (const [key, value] of Object.entries(uiSettings)) {
 				if (!this.userOverrides.has(key) && value !== undefined) {
 					setConfigValue(this.config, key, value);
