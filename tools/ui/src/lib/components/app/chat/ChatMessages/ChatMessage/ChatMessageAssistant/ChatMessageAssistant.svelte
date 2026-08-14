@@ -8,6 +8,7 @@
 		ChatMessageAssistantStatistics,
 		ChatMessageEditForm
 	} from '$lib/components/app';
+	import VoiceMessageActions from '$lib/components/app/voice/VoiceMessageActions.svelte';
 	import { getChatMessageEditContext } from '$lib/contexts';
 	import { MessageRole } from '$lib/enums';
 	import { useProcessingState } from '$lib/hooks/use-processing-state.svelte';
@@ -181,16 +182,20 @@
 	{/if}
 
 	{#if message.timestamp && !editCtx.isEditing}
-		<ChatMessageActionIcons
-			actionsPosition="left"
-			justify="start"
-			onContinue={currentConfig.enableContinueGeneration ? onContinue : undefined}
-			onRawOutputToggle={(enabled) => (showRawOutput = enabled)}
-			{onRegenerate}
-			rawOutputEnabled={showRawOutput}
-			role={MessageRole.ASSISTANT}
-			showRawOutputSwitch={currentConfig.showRawOutputSwitch}
-		/>
+		<div class="flex items-start gap-1">
+			<VoiceMessageActions {message} />
+
+			<ChatMessageActionIcons
+				actionsPosition="left"
+				justify="start"
+				onContinue={currentConfig.enableContinueGeneration ? onContinue : undefined}
+				onRawOutputToggle={(enabled) => (showRawOutput = enabled)}
+				{onRegenerate}
+				rawOutputEnabled={showRawOutput}
+				role={MessageRole.ASSISTANT}
+				showRawOutputSwitch={currentConfig.showRawOutputSwitch}
+			/>
+		</div>
 	{/if}
 </div>
 
