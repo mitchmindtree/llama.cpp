@@ -73,6 +73,15 @@ export const SETTINGS_KEYS = {
 	TOP_K: 'top_k',
 	TOP_P: 'top_p',
 	TYP_P: 'typ_p',
+	// Voice (pkgs/llama-ui-voice integration)
+	VOICE_BARGE_IN: 'voiceBargeIn',
+	VOICE_ENABLED: 'voiceEnabled',
+	VOICE_GATEWAY_URL: 'voiceGatewayUrl',
+	VOICE_HALF_DUPLEX: 'voiceHalfDuplex',
+	VOICE_PARAGRAPH_CHUNKS: 'voiceParagraphChunks',
+	VOICE_SPEAK_REPLIES: 'voiceSpeakReplies',
+	VOICE_TEMPERATURE: 'voiceTemperature',
+	VOICE_VOICE: 'voiceVoice',
 	XTC_PROBABILITY: 'xtc_probability',
 	XTC_THRESHOLD: 'xtc_threshold'
 } as const;

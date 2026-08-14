@@ -8,6 +8,7 @@
 		ChatFormActionSubmit,
 		ChatFormContextGauge
 	} from '$lib/components/app';
+	import VoiceControls from '$lib/components/app/voice/VoiceControls.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { ICON_CLASS_DEFAULT } from '$lib/constants';
 	import { setChatFormActionsContext } from '$lib/contexts';
@@ -155,6 +156,8 @@
 	{/if}
 
 	<div class="flex items-center gap-1.5">
+		<VoiceControls />
+
 		{#if hasProcessedTokens}
 			<ChatFormContextGauge />
 		{/if}

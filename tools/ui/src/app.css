@@ -225,3 +225,9 @@
 .mermaidTooltip {
 	display: none !important;
 }
+
+/* Voice integration (pkgs/llama-ui-voice): the not-yet-spoken part of the
+   streaming assistant message is dimmed while speak-replies plays it. */
+::highlight(voice-unspoken) {
+	color: var(--muted-foreground);
+}
