@@ -74,3 +74,9 @@ export { default as SettingsChatFields } from './SettingsChat/SettingsChatFields
  * server favicons and permission management controls.
  */
 export { default as SettingsChatToolsTab } from './SettingsChat/SettingsChatToolsTab.svelte';
+
+/**
+ * Voice management tab: registered voices, cloning and voice design
+ * (pkgs/llama-ui-voice integration).
+ */
+export { default as SettingsVoiceTab } from './SettingsChat/SettingsVoiceTab.svelte';
