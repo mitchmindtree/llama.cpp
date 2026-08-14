@@ -195,6 +195,8 @@ class SettingsStore {
 			}
 		}
 
+		this.trackUiSettingsOverride(key as string, value);
+
 		this.saveConfig();
 	}
 
@@ -222,9 +224,36 @@ class SettingsStore {
 					}
 				}
 			}
+
+			this.trackUiSettingsOverride(key, value);
 		}
 
 		this.saveConfig();
+	}
+
+
+	/**
+	 * Voice keys are seeded as an admin baseline via ui_settings and re-applied
+	 * on every load for keys without a user override (admin-defaults patch).
+	 * They are not sync parameters, so record their overrides here: an explicit
+	 * write that differs from the baseline pins the user's value across loads,
+	 * and writing the baseline value back re-subscribes the key to admin
+	 * changes. Deliberately voice-only: mcpServers stays fully admin-driven.
+	 */
+	private trackUiSettingsOverride(key: string, value: unknown): void {
+		if (!key.startsWith('voice')) return;
+		const uiSettings = serverStore.uiSettings;
+		if (!uiSettings || !(key in uiSettings)) return;
+		const baseline = uiSettings[key];
+		const same =
+			typeof value === 'number' && typeof baseline === 'number'
+				? Math.abs(value - baseline) < 1e-9
+				: value === baseline;
+		if (same) {
+			this.userOverrides.delete(key);
+		} else {
+			this.userOverrides.add(key);
+		}
 	}
 
 	/**
