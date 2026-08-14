@@ -29,10 +29,6 @@ class SettingsStore {
 	isInitialized = $state(false);
 	userOverrides = $state<Set<string>>(new Set());
 
-	// True until a config exists in localStorage; gates the one-time
-	// application of server ui_settings defaults for new users.
-	private isFirstVisit = false;
-
 	canSyncParameter(key: string): boolean {
 		return ParameterSyncService.canSyncParameter(key);
 	}
@@ -283,9 +279,6 @@ class SettingsStore {
 	 */
 	syncWithServerDefaults(): void {
 		const propsDefaults = this.getServerDefaults();
-
-		if (Object.keys(propsDefaults).length === 0) return;
-
 		const uiSettings = serverStore.uiSettings;
 		const uiSettingsKeys = new Set(uiSettings ? Object.keys(uiSettings) : []);
 
@@ -304,21 +297,14 @@ class SettingsStore {
 			}
 		}
 
-		// UI settings are the admin's defaults for new users: applied once on
-		// the first visit, never on later loads, so the user's config can
-		// diverge. "Reset to Default" is the explicit way back to the baseline.
-		// A first visit config carries factory values only, so a key that
-		// already diverges here was set by the user before the baseline could
-		// be reached, through the API key splash, and stays theirs.
-		if (uiSettings && this.isFirstVisit) {
-			this.isFirstVisit = false;
-
+		// UI settings are the admin's baseline: applied on every load for keys the
+		// user has not overridden, so a server-side config change reaches existing
+		// browser profiles too. Gating this on propsDefaults being non-empty would
+		// also drop the baseline entirely in router mode, where /props carries no
+		// default_generation_settings.params.
+		if (uiSettings) {
 			for (const [key, value] of Object.entries(uiSettings)) {
 				if (value === undefined || this.userOverrides.has(key)) continue;
-
-				if (getConfigValue(this.config, key) !== getConfigValue(SETTING_CONFIG_DEFAULT, key)) {
-					continue;
-				}
 
 				setConfigValue(this.config, key, value);
 
@@ -430,15 +416,7 @@ class SettingsStore {
 	private loadConfig() {
 		if (!browser) return;
 
-		const {
-			config: savedVal,
-			isFirstVisit,
-			userOverrides: savedOverrides
-		} = SettingsService.loadConfig();
-
-		// First visit: no stored config yet. Server ui_settings apply once in
-		// this state, then the user's config diverges freely.
-		this.isFirstVisit = isFirstVisit;
+		const { config: savedVal, userOverrides: savedOverrides } = SettingsService.loadConfig();
 
 		// Merge with defaults to prevent breaking changes
 		this.config = {
