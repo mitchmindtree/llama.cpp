@@ -198,7 +198,7 @@
 			{isStreaming}
 			isExecuting={section.toolCallId !== undefined &&
 				section.toolCallId === currentlyExecutingToolCallId}
-			attachments={message?.extra}
+			attachments={section.toolResultExtras ?? message?.extra}
 			onToggle={() => toggleExpanded(index, section)}
 		/>
 	{/if}

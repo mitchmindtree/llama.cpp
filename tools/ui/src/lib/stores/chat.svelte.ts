@@ -1219,7 +1219,10 @@ class ChatStore {
 				const idx = conversationsStore.findMessageIndex(messageId);
 				if (idx === -1) return;
 				const msg = conversationsStore.activeMessages[idx];
-				const updatedExtras = [...(msg.extra || []), ...extras];
+				// Snapshot the reactive extra before merging: msg.extra is a Svelte
+				// $state proxy, and passing a proxy to Dexie's structured clone throws
+				// DataCloneError, silently dropping the persisted attachment.
+				const updatedExtras = [...$state.snapshot(msg.extra ?? []), ...extras];
 				conversationsStore.updateMessageAtIndex(idx, { extra: updatedExtras });
 				DatabaseService.updateMessage(messageId, { extra: updatedExtras }).catch(console.error);
 			},
