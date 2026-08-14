@@ -4,6 +4,7 @@ import { SETTINGS_KEYS } from './settings-keys.constants';
 import { TITLE_GENERATION } from './title-generation.constants';
 import { FILE_GLOB_SEARCH_PICKERS } from './working-directory.constants';
 import {
+	AudioLines,
 	Code,
 	Database,
 	Funnel,
@@ -33,7 +34,8 @@ export const SETTINGS_SECTIONS = {
 	GENERAL: { slug: 'general', title: 'General' },
 	IMPORT_EXPORT: { slug: 'import-export', title: 'Import/Export' },
 	SAMPLING_PENALTIES: { slug: 'sampling-penalties', title: 'Sampling & Penalties' },
-	TOOLS: { slug: 'tools', title: 'Tools' }
+	TOOLS: { slug: 'tools', title: 'Tools' },
+	VOICE: { slug: 'voice', title: 'Voice' }
 } as const;
 
 export const SETTINGS_SECTION_SLUGS = {
@@ -43,7 +45,8 @@ export const SETTINGS_SECTION_SLUGS = {
 	GENERAL: SETTINGS_SECTIONS.GENERAL.slug,
 	IMPORT_EXPORT: SETTINGS_SECTIONS.IMPORT_EXPORT.slug,
 	SAMPLING_PENALTIES: SETTINGS_SECTIONS.SAMPLING_PENALTIES.slug,
-	TOOLS: SETTINGS_SECTIONS.TOOLS.slug
+	TOOLS: SETTINGS_SECTIONS.TOOLS.slug,
+	VOICE: SETTINGS_SECTIONS.VOICE.slug
 } as const;
 
 export const SETTINGS_SECTION_TITLES = {
@@ -53,7 +56,8 @@ export const SETTINGS_SECTION_TITLES = {
 	GENERAL: SETTINGS_SECTIONS.GENERAL.title,
 	IMPORT_EXPORT: SETTINGS_SECTIONS.IMPORT_EXPORT.title,
 	SAMPLING_PENALTIES: SETTINGS_SECTIONS.SAMPLING_PENALTIES.title,
-	TOOLS: SETTINGS_SECTIONS.TOOLS.title
+	TOOLS: SETTINGS_SECTIONS.TOOLS.title,
+	VOICE: SETTINGS_SECTIONS.VOICE.title
 } as const;
 
 export const SETTINGS_REGISTRY: SettingsSectionEntry[] = [
@@ -364,6 +368,79 @@ export const SETTINGS_REGISTRY: SettingsSectionEntry[] = [
 		settings: [],
 		slug: SETTINGS_SECTION_SLUGS.IMPORT_EXPORT,
 		title: SETTINGS_SECTION_TITLES.IMPORT_EXPORT
+	},
+	// Voice (pkgs/llama-ui-voice integration). Rendered by SettingsVoiceTab, so
+	// the entries only feed the config defaults, not standalone fields.
+	{
+		icon: AudioLines,
+		settings: [
+			{
+				defaultValue: false,
+				help: 'Master switch for the voice integration. Usually seeded server side via --ui-config voiceEnabled.',
+				key: SETTINGS_KEYS.VOICE_ENABLED,
+				label: 'Voice enabled',
+				standaloneField: false,
+				type: SettingsFieldType.CHECKBOX
+			},
+			{
+				defaultValue: 'voice',
+				help: 'Origin-relative base path of the voice gateway (VAD/STT and voice management).',
+				key: SETTINGS_KEYS.VOICE_GATEWAY_URL,
+				label: 'Voice gateway URL',
+				standaloneField: false,
+				type: SettingsFieldType.INPUT
+			},
+			{
+				defaultValue: 'narrator',
+				help: 'Registered voice used for spoken replies. Always sent explicitly so the TTS never samples a random voice.',
+				key: SETTINGS_KEYS.VOICE_VOICE,
+				label: 'Voice',
+				standaloneField: false,
+				type: SettingsFieldType.INPUT
+			},
+			{
+				defaultValue: false,
+				help: 'Initial state of the speak-replies toggle.',
+				key: SETTINGS_KEYS.VOICE_SPEAK_REPLIES,
+				label: 'Speak replies',
+				standaloneField: false,
+				type: SettingsFieldType.CHECKBOX
+			},
+			{
+				defaultValue: true,
+				help: 'Speaking while the assistant is audible stops playback and generation.',
+				key: SETTINGS_KEYS.VOICE_BARGE_IN,
+				label: 'Barge-in',
+				standaloneField: false,
+				type: SettingsFieldType.CHECKBOX
+			},
+			{
+				defaultValue: false,
+				help: 'Mute mic input while the assistant is audible, for speaker setups where echo cancellation fails. Disables voice barge-in.',
+				key: SETTINGS_KEYS.VOICE_HALF_DUPLEX,
+				label: 'Voice half-duplex',
+				standaloneField: false,
+				type: SettingsFieldType.CHECKBOX
+			},
+			{
+				defaultValue: 0.9,
+				help: 'TTS talker temperature: lower is flatter and more stable, higher is livelier. 0.9 is the model default.',
+				key: SETTINGS_KEYS.VOICE_TEMPERATURE,
+				label: 'Voice expressiveness',
+				standaloneField: false,
+				type: SettingsFieldType.INPUT
+			},
+			{
+				defaultValue: true,
+				help: 'Synthesize several sentences per TTS request for smoother prosody. Off reverts to one sentence per request.',
+				key: SETTINGS_KEYS.VOICE_PARAGRAPH_CHUNKS,
+				label: 'Paragraph speech chunks',
+				standaloneField: false,
+				type: SettingsFieldType.CHECKBOX
+			}
+		],
+		slug: SETTINGS_SECTION_SLUGS.VOICE,
+		title: SETTINGS_SECTION_TITLES.VOICE
 	},
 	// Sampling
 	{

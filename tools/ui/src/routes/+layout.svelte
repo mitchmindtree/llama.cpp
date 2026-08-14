@@ -5,6 +5,7 @@
 	import { base } from '$app/paths';
 	import { page } from '$app/state';
 	import { SidebarNavigation } from '$lib/components/app';
+	import VoiceHost from '$lib/components/app/voice/VoiceHost.svelte';
 	import { PwaMetaTags, PwaRefreshAlert } from '$lib/components/pwa';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import {
@@ -331,6 +332,8 @@
 	</div>
 
 	<ModeWatcher />
+
+	<VoiceHost />
 
 	<Toaster richColors />
 </Tooltip.Provider>
