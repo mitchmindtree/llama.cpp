@@ -1,4 +1,5 @@
 <script lang="ts">
+	import VoiceMessageActions from '$lib/components/app/voice/VoiceMessageActions.svelte';
 	import {
 		ChatMessageAgenticContent,
 		ChatMessageActionIcons,
@@ -204,6 +205,8 @@
 	</div>
 
 	{#if message.timestamp && !editCtx.isEditing}
+		<div class="flex items-start gap-1">
+		<VoiceMessageActions {message} />
 		<ChatMessageActionIcons
 			role={MessageRole.ASSISTANT}
 			justify="start"
@@ -224,6 +227,7 @@
 			rawOutputEnabled={showRawOutput}
 			onRawOutputToggle={(enabled) => (showRawOutput = enabled)}
 		/>
+		</div>
 	{/if}
 </div>
 
