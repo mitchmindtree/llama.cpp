@@ -2,6 +2,7 @@ import { ColorMode } from '$lib/enums/ui.enums';
 import { SettingsFieldType } from '$lib/enums/settings.enums';
 import { SyncableParameterType } from '$lib/enums';
 import {
+	AudioLines,
 	Funnel,
 	AlertTriangle,
 	Code,
@@ -36,6 +37,7 @@ export const SETTINGS_SECTION_TITLES = {
 	AGENTIC: 'Agentic',
 	TOOLS: 'Tools',
 	IMPORT_EXPORT: 'Import/Export',
+	VOICE: 'Voice',
 	DEVELOPER: 'Developer'
 } as const;
 
@@ -46,6 +48,8 @@ const STANDALONE_SECTIONS: { title: SettingsSectionTitle; slug: string; icon: Co
 		slug: SETTINGS_SECTION_SLUGS.IMPORT_EXPORT,
 		icon: Database
 	}
+,
+	{ title: SETTINGS_SECTION_TITLES.VOICE, slug: SETTINGS_SECTION_SLUGS.VOICE, icon: AudioLines }
 ];
 
 const COLOR_MODE_OPTIONS: Array<{ value: string; label: string; icon: Component }> = [
@@ -652,6 +656,62 @@ const NON_UI_SETTINGS: SettingsEntry[] = [
 		label: 'Generate title with LLM',
 		help: 'Counterpart of the conversation title radio; stored and synced without a dedicated UI field.',
 		defaultValue: false,
+		type: SettingsFieldType.CHECKBOX
+	},
+	{
+		key: SETTINGS_KEYS.VOICE_ENABLED,
+		label: 'Voice enabled',
+		help: 'Master switch for the voice integration. Usually seeded server side via --ui-config voiceEnabled.',
+		defaultValue: false,
+		type: SettingsFieldType.CHECKBOX
+	},
+	{
+		key: SETTINGS_KEYS.VOICE_GATEWAY_URL,
+		label: 'Voice gateway URL',
+		help: 'Origin-relative base path of the voice gateway (VAD/STT and voice management).',
+		defaultValue: 'voice',
+		type: SettingsFieldType.INPUT
+	},
+	{
+		key: SETTINGS_KEYS.VOICE_VOICE,
+		label: 'Voice',
+		help: 'Registered voice used for spoken replies. Always sent explicitly so the TTS never samples a random voice.',
+		defaultValue: 'narrator',
+		type: SettingsFieldType.INPUT
+	},
+	{
+		key: SETTINGS_KEYS.VOICE_SPEAK_REPLIES,
+		label: 'Speak replies',
+		help: 'Initial state of the speak-replies toggle.',
+		defaultValue: false,
+		type: SettingsFieldType.CHECKBOX
+	},
+	{
+		key: SETTINGS_KEYS.VOICE_BARGE_IN,
+		label: 'Barge-in',
+		help: 'Speaking while the assistant is audible stops playback and generation.',
+		defaultValue: true,
+		type: SettingsFieldType.CHECKBOX
+	},
+	{
+		key: SETTINGS_KEYS.VOICE_HALF_DUPLEX,
+		label: 'Voice half-duplex',
+		help: 'Mute mic input while the assistant is audible, for speaker setups where echo cancellation fails. Disables voice barge-in.',
+		defaultValue: false,
+		type: SettingsFieldType.CHECKBOX
+	},
+	{
+		key: SETTINGS_KEYS.VOICE_TEMPERATURE,
+		label: 'Voice expressiveness',
+		help: 'TTS talker temperature: lower is flatter and more stable, higher is livelier. 0.9 is the model default.',
+		defaultValue: 0.9,
+		type: SettingsFieldType.INPUT
+	},
+	{
+		key: SETTINGS_KEYS.VOICE_PARAGRAPH_CHUNKS,
+		label: 'Paragraph speech chunks',
+		help: 'Synthesize several sentences per TTS request for smoother prosody. Off reverts to one sentence per request.',
+		defaultValue: true,
 		type: SettingsFieldType.CHECKBOX
 	}
 	// {

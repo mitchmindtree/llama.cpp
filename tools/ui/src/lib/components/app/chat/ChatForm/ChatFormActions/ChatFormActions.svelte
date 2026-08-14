@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { ICON_CLASS_DEFAULT } from '$lib/constants/css-classes';
+	import VoiceControls from '$lib/components/app/voice/VoiceControls.svelte';
 	import { Square, SkipForward } from '@lucide/svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { ChatService } from '$lib/services';
@@ -155,6 +156,8 @@
 	{/if}
 
 	<div class="flex items-center gap-1.5">
+		<VoiceControls />
+
 		{#if hasProcessedTokens}
 			<ChatFormContextGauge />
 		{/if}

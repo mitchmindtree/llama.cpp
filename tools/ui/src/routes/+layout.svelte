@@ -16,6 +16,7 @@
 	import { isRouterMode, serverStore } from '$lib/stores/server.svelte';
 	import { config, settingsStore } from '$lib/stores/settings.svelte';
 	import { ModeWatcher } from 'mode-watcher';
+	import VoiceHost from '$lib/components/app/voice/VoiceHost.svelte';
 	import { ROUTES } from '$lib/constants/routes';
 	import { RouterService } from '$lib/services/router.service';
 	import { Toaster } from 'svelte-sonner';
@@ -280,6 +281,8 @@
 	</div>
 
 	<ModeWatcher />
+
+	<VoiceHost />
 
 	<Toaster richColors />
 </Tooltip.Provider>

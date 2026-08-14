@@ -70,5 +70,14 @@ export const SETTINGS_KEYS = {
 	SYMBOLIC_MATH_ENABLED: 'symbolicMathEnabled',
 	// PY_INTERPRETER_ENABLED: 'pyInterpreterEnabled',
 	CUSTOM_JSON: 'customJson',
-	CUSTOM_CSS: 'customCss'
+	CUSTOM_CSS: 'customCss',
+	// Voice (pkgs/llama-ui-voice integration)
+	VOICE_ENABLED: 'voiceEnabled',
+	VOICE_GATEWAY_URL: 'voiceGatewayUrl',
+	VOICE_VOICE: 'voiceVoice',
+	VOICE_SPEAK_REPLIES: 'voiceSpeakReplies',
+	VOICE_BARGE_IN: 'voiceBargeIn',
+	VOICE_HALF_DUPLEX: 'voiceHalfDuplex',
+	VOICE_TEMPERATURE: 'voiceTemperature',
+	VOICE_PARAGRAPH_CHUNKS: 'voiceParagraphChunks'
 } as const;
