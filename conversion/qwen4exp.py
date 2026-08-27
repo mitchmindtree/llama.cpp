@@ -68,8 +68,11 @@ class Qwen4ExpTextModel(_Qwen35MRopeMixin, _LinearAttentionVReorderBase):
         self.gguf_writer.add_attention_compress_ratios(ratios)
 
         # ple_layer_ids is 1-based in the HF config; empty means no n-gram table,
-        # so emit no PLE keys rather than optional ones
-        ple_layers = [i - 1 for i in hp["ple_layer_ids"]]
+        # so emit no PLE keys rather than optional ones. An MTP-only draft file
+        # has no PLE layer either (the block is dense attention), and its
+        # checkpoint subset drops the trunk PLE tensors the hash constants live
+        # in, so it skips the whole PLE key family.
+        ple_layers = [] if self.mtp_only else [i - 1 for i in hp["ple_layer_ids"]]
         if not ple_layers:
             return
         self.gguf_writer.add_ple_layers(ple_layers)
