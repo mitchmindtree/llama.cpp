@@ -13,9 +13,11 @@ class MicProcessor extends AudioWorkletProcessor {
 
   process(inputs) {
     const input = inputs[0][0];
+
     if (!input) return true;
 
     const merged = new Float32Array(this.backlog.length + input.length);
+
     merged.set(this.backlog, 0);
     merged.set(input, this.backlog.length);
 
@@ -24,17 +26,22 @@ class MicProcessor extends AudioWorkletProcessor {
       const i = Math.floor(this.pos);
       const frac = this.pos - i;
       const s = merged[i] * (1 - frac) + merged[i + 1] * frac;
+
       this.frame[this.frameIdx++] = Math.max(-32768, Math.min(32767, Math.round(s * 32767)));
+
       if (this.frameIdx === this.frame.length) {
         this.port.postMessage(this.frame.buffer.slice(0));
         this.frameIdx = 0;
       }
+
       this.pos += this.ratio;
     }
 
     const consumed = Math.floor(this.pos);
+
     this.backlog = merged.slice(consumed);
     this.pos -= consumed;
+
     return true;
   }
 }

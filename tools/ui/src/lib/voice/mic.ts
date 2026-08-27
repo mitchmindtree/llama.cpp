@@ -15,20 +15,23 @@ export class VoiceMic {
 
 	async start(onFrame: (frame: ArrayBuffer) => void): Promise<void> {
 		if (this.ctx) return;
+
 		this.stream = await navigator.mediaDevices.getUserMedia({
 			audio: {
+				autoGainControl: true,
 				channelCount: 1,
 				echoCancellation: true,
-				noiseSuppression: true,
-				autoGainControl: true
+				noiseSuppression: true
 			}
 		});
 		this.ctx = new AudioContext();
 		// voice-worklets/, not voice/: /voice is the gateway's reverse-proxy
 		// mount on the HTTPS origin and would shadow the asset with a 404.
 		const url = new URL('voice-worklets/mic-worklet.js', document.baseURI);
+
 		await this.ctx.audioWorklet.addModule(url.toString());
 		const node = new AudioWorkletNode(this.ctx, 'mic');
+
 		this.ctx.createMediaStreamSource(this.stream).connect(node);
 		node.port.onmessage = (e) => onFrame(e.data as ArrayBuffer);
 	}

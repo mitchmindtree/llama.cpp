@@ -5,14 +5,14 @@
 	import { AudioLines, Mic, Volume2, VolumeX } from '@lucide/svelte';
 	import { Button } from '$lib/components/ui/button';
 	import * as Tooltip from '$lib/components/ui/tooltip';
-	import { ICON_CLASS_DEFAULT } from '$lib/constants/css-classes';
+	import { ICON_CLASS_DEFAULT } from '$lib/constants';
 	import { voiceController } from '$lib/voice/controller.svelte';
 
 	const statusColor = {
 		idle: 'bg-muted-foreground/40',
 		listening: 'bg-green-500',
-		transcribing: 'bg-yellow-500 animate-pulse',
-		speaking: 'bg-blue-500 animate-pulse'
+		speaking: 'bg-blue-500 animate-pulse',
+		transcribing: 'bg-yellow-500 animate-pulse'
 	} as const;
 </script>
 
@@ -29,6 +29,7 @@
 					variant="ghost"
 				>
 					<span class="sr-only">Toggle spoken replies</span>
+
 					{#if voiceController.speakEnabled}
 						<Volume2 class={ICON_CLASS_DEFAULT} />
 					{:else}
@@ -36,6 +37,7 @@
 					{/if}
 				</Button>
 			</Tooltip.Trigger>
+
 			<Tooltip.Content>Speak replies aloud</Tooltip.Content>
 		</Tooltip.Root>
 
@@ -50,6 +52,7 @@
 								voiceController.micLevel * 0.25});"
 						></span>
 					{/if}
+
 					<Button
 						class="h-8 w-8 rounded-full p-0 {voiceController.micEnabled
 							? 'text-green-500'
@@ -59,6 +62,7 @@
 						variant="ghost"
 					>
 						<span class="sr-only">Toggle voice conversation</span>
+
 						{#if voiceController.micEnabled}
 							<AudioLines class={ICON_CLASS_DEFAULT} />
 						{:else}
@@ -67,16 +71,16 @@
 					</Button>
 				</span>
 			</Tooltip.Trigger>
+
 			<Tooltip.Content>Continuous voice conversation</Tooltip.Content>
 		</Tooltip.Root>
 
 		{#if voiceController.speakEnabled || voiceController.micEnabled}
 			<span class="h-2 w-2 rounded-full {statusColor[voiceController.status]}"></span>
+
 			{#if voiceController.status !== 'idle'}
 				<span class="hidden text-xs text-muted-foreground select-none sm:inline">
-					{voiceController.status === 'transcribing'
-						? 'transcribing...'
-						: voiceController.status}
+					{voiceController.status === 'transcribing' ? 'transcribing...' : voiceController.status}
 				</span>
 			{/if}
 		{/if}

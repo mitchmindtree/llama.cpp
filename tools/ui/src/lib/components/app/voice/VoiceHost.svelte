@@ -2,12 +2,13 @@
 	// App-wide voice singleton host: mounted once in the root layout. Owns the
 	// effects (a component context is required for $effect) while the state
 	// lives in the controller.
-	import { onMount } from 'svelte';
-	import { chatStore } from '$lib/stores/chat.svelte';
+	import { chatStore } from '$lib/stores';
 	import { voiceController } from '$lib/voice/controller.svelte';
+	import { onMount } from 'svelte';
 
 	onMount(() => {
 		void voiceController.probe();
+
 		return () => {
 			if (voiceController.micEnabled) void voiceController.toggleMic();
 		};

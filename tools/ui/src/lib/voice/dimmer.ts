@@ -46,34 +46,44 @@ function supported(): boolean {
 
 export function scheduleDim(nextProvider: DimProvider): void {
 	if (!supported()) return;
+
 	provider = nextProvider;
 	raf ??= requestAnimationFrame(run);
 }
 
 export function clearDim(): void {
 	provider = null;
+
 	if (raf !== null) {
 		cancelAnimationFrame(raf);
 		raf = null;
 	}
+
 	observer?.disconnect();
 	observer = null;
 	observed = null;
+
 	if (supported()) CSS.highlights.delete(HIGHLIGHT_NAME);
 }
 
 function run(): void {
 	raf = null;
 	const state = provider?.() ?? null;
+
 	if (state === null) {
 		clearDim();
+
 		return;
 	}
+
 	const content = contentElement();
+
 	if (!content || !content.isConnected) {
 		CSS.highlights.delete(HIGHLIGHT_NAME);
+
 		return;
 	}
+
 	observe(content);
 	draw(content, state);
 }
@@ -82,17 +92,19 @@ function contentElement(): Element | null {
 	const els = document.querySelectorAll(
 		'.chat-message:last-child .chat-message-assistant .agentic-text .markdown-content'
 	);
+
 	return els.length > 0 ? els[els.length - 1] : null;
 }
 
 /** Re-schedule after every renderer mutation (tail-block swaps). */
 function observe(content: Element): void {
 	if (observed === content && observed.isConnected) return;
+
 	observer?.disconnect();
 	observer = new MutationObserver(() => {
 		if (provider !== null) raf ??= requestAnimationFrame(run);
 	});
-	observer.observe(content, { childList: true, subtree: true, characterData: true });
+	observer.observe(content, { characterData: true, childList: true, subtree: true });
 	observed = content;
 }
 
@@ -107,25 +119,35 @@ function positionInBlock(
 				? NodeFilter.FILTER_ACCEPT
 				: NodeFilter.FILTER_REJECT
 	});
+
 	let seen = 0;
+
 	for (let node = walker.nextNode(); node; node = walker.nextNode()) {
 		const len = node.textContent?.length ?? 0;
+
 		if (seen + len >= targetChars) {
 			let offset = targetChars - seen;
+
 			// Snap back to a word boundary so the dim edge never splits a word.
 			const text = node.textContent ?? '';
+
 			while (offset > 0 && offset < text.length && !/\s/.test(text[offset - 1])) offset -= 1;
+
 			return { node, offset };
 		}
+
 		seen += len;
 	}
+
 	return null;
 }
 
-function draw(content: Element, { boundary, blockAligned }: DimState): void {
+function draw(content: Element, { blockAligned, boundary }: DimState): void {
 	const ranges: Range[] = [];
+
 	for (const block of content.querySelectorAll('.markdown-block')) {
 		if (!block.isConnected) continue;
+
 		const m = BLOCK_ID.exec(block.getAttribute('data-block-id') ?? '');
 		// The unstable tail block has no offsets; being the newest text it is
 		// always past the spoken boundary, so it dims whole.
@@ -135,6 +157,7 @@ function draw(content: Element, { boundary, blockAligned }: DimState): void {
 		try {
 			if (start >= boundary) {
 				const range = new Range();
+
 				range.selectNodeContents(block);
 				ranges.push(range);
 			} else if (end > boundary && !blockAligned) {
@@ -144,14 +167,17 @@ function draw(content: Element, { boundary, blockAligned }: DimState): void {
 						((boundary - start) / Math.max(1, end - start)) * (block.textContent?.length ?? 0)
 					)
 				);
+
 				if (visible) {
 					const range = new Range();
+
 					range.setStart(visible.node, visible.offset);
 					range.setEndAfter(block);
 					ranges.push(range);
 				}
 			} else if (end > boundary) {
 				const range = new Range();
+
 				range.selectNodeContents(block);
 				ranges.push(range);
 			}
@@ -162,7 +188,9 @@ function draw(content: Element, { boundary, blockAligned }: DimState): void {
 
 	if (ranges.length === 0) {
 		CSS.highlights.delete(HIGHLIGHT_NAME);
+
 		return;
 	}
+
 	CSS.highlights.set(HIGHLIGHT_NAME, new Highlight(...ranges));
 }
