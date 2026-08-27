@@ -107,9 +107,11 @@
 #define GGML_CUDA_CC_IS_QY2(cc)      (cc >= GGML_CUDA_CC_QY2 && cc < GGML_CUDA_CC_PH1)
 #define GGML_CUDA_CC_IS_PH1(cc)      (cc >= GGML_CUDA_CC_PH1)
 
-#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && CUDART_VERSION >= 11070
+// On HIP the CUB device algorithms come from hipCUB (rocPRIM); the CCCL-version-gated
+// paths (DeviceTopK, strided iterators) stay off there because the CCCL macros are unset.
+#if !defined(GGML_USE_MUSA) && (defined(GGML_USE_HIP) || CUDART_VERSION >= 11070)
 #    define GGML_CUDA_USE_CUB
-#endif  // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && CUDART_VERSION >= 11070
+#endif  // !defined(GGML_USE_MUSA) && (defined(GGML_USE_HIP) || CUDART_VERSION >= 11070)
 
 // PDL host-side support (cudaLaunchKernelEx) requires CUDART >= 11.8.
 // However, this has been bugged in CTK < 12.3 for MSVC builds, see
