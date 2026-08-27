@@ -331,6 +331,12 @@ struct common_params_speculative_draft {
 
     bool backend_sampling = true; // offload draft sampling to the backend (default: on)
 
+    // [TAG_SPEC_AVOID_DRAFT_REEVAL] re-decode the verify batch through the MTP draft so its
+    // KV is conditioned on the target's hidden states instead of the draft's own chain.
+    // Off skips that decode: accepted rows keep their draft-conditioned KV (can cost some
+    // acceptance), and every draft-context decode becomes single-token, so its graph stays warm.
+    bool mtp_reeval = true;
+
     common_params_model mparams;
 
     llama_context * ctx_tgt = nullptr;
