@@ -338,7 +338,9 @@ class _QwenMtpMixin:
             elif len(parts) == 3 and parts[1] in remapper:
                 name = f"model.layers.{cls._original_block_count}.{remapper[parts[1]]}.{parts[2]}"
         elif cls.mtp_only:
-            keep = name in (
+            # multimodal checkpoints nest the text tower as model.language_model.*;
+            # the base filter strips that prefix, but only after this whitelist runs
+            keep = name.replace("language_model.", "") in (
                 "model.embed_tokens.weight", "model.norm.weight", "lm_head.weight",
                 "embed_tokens.weight", "norm.weight",
             )
