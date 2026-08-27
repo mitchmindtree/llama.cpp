@@ -1510,8 +1510,14 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
 
         const size_t row_bytes = (size_t) n_embd * sizeof(float);
 
-        // if kv is shared with target (e.g Gemma4), then we can skip this catch-up decode
-        if (!is_mem_shared) {
+        // if kv is shared with target (e.g Gemma4), then we can skip this catch-up decode.
+        // [TAG_SPEC_AVOID_DRAFT_REEVAL] mtp_reeval=false also skips it: the draft already
+        // decoded these positions during draft() (the seed row even with the same target
+        // hidden state), so the only thing lost is re-conditioning the drafted rows' KV on
+        // the target's hidden states. In exchange every draft-context decode is
+        // single-token, which keeps its graph warm. Chained heads re-decode per head by
+        // design and always re-evaluate.
+        if (!is_mem_shared && (params.mtp_reeval || chain_heads)) {
             common_batch_clear(batch);
 
             for (int k = 0; k < n_tokens; ++k) {

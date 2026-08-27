@@ -3044,10 +3044,19 @@ private:
 
             slot.stats.n_draft_tokens += draft.size();
 
-            // TODO: avoid restoring the draft context and re-evaluating the drafted tokens when not needed [TAG_SPEC_AVOID_DRAFT_REEVAL]
+            // [TAG_SPEC_AVOID_DRAFT_REEVAL] with --no-spec-draft-mtp-reeval the MTP draft
+            // keeps the rows it decoded while drafting: the restore-and-re-evaluate round
+            // trip is skipped here, and common_speculative_process skips the catch-up
+            // decode. Rejected rows are removed after acceptance via slot.mem.seq_rm.
+            const bool spec_mtp = std::find(params_base.speculative.types.begin(),
+                                            params_base.speculative.types.end(),
+                                            COMMON_SPECULATIVE_TYPE_DRAFT_MTP) != params_base.speculative.types.end();
+
+            const bool keep_draft_rows = spec_mtp && !params_base.speculative.draft.mtp_reeval;
+
             const bool use_ckpt_dft = ctx_dft_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
 
-            if (ctx_dft) {
+            if (ctx_dft && !keep_draft_rows) {
                 if (use_ckpt_dft) {
                     ckpt.load_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
                 }
