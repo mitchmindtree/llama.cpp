@@ -9,7 +9,9 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstring>
 #include <iterator>
+#include <map>
 #include <stdexcept>
 
 //
@@ -33,6 +35,7 @@ llama_memory_hybrid_idx::llama_memory_hybrid_idx(
                             /* common */
                  uint32_t   n_seq_max,
                  uint32_t   n_rs_seq,
+                 uint32_t   n_ubatch,
                      bool   offload,
                      bool   unified,
                             /* layer filters */
@@ -61,7 +64,111 @@ llama_memory_hybrid_idx::llama_memory_hybrid_idx(
             model, hparams_idx, type_k, type_v, v_trans, offload, unified,
             kv_size, n_seq_max, n_pad, n_swa, swa_type,
             nullptr, filter_idx, nullptr, nullptr, "idx_");
-    }()) {}
+    }()) {
+    // Pooled QSA block keys: one scoring-ready key per completed block, per QSA
+    // layer. Sized by the largest compress ratio's block count, padded so the
+    // graph view width is stable, plus one scratch row per possible commit slot:
+    // set_rows forbids overlapping destination rows, so idle slots cannot share one.
+    // Rows are indexed by block = pos/ratio, so with more than one sequence the
+    // same row would be contested: the cache only exists for n_seq_max == 1
+    // (the MTP configuration), everything else keeps the re-pooling path.
+    if (mem_idx && filter_idx && n_seq_max == 1) {
+        const auto & hp = model.hparams;
+
+        pooled_ns_ = 1;
+
+        uint32_t r_min = 0;
+        for (uint32_t il = 0; il < hp.n_layer(); ++il) {
+            if (filter_idx(il) && hp.dsv4_compress_ratios[il] > 0) {
+                r_min = r_min == 0 ? hp.dsv4_compress_ratios[il]
+                                   : std::min<uint32_t>(r_min, hp.dsv4_compress_ratios[il]);
+            }
+        }
+
+        if (r_min > 0) {
+            pooled_scratch_ = GGML_PAD((kv_size + r_min - 1)/r_min, 256);
+            pooled_rows_    = pooled_scratch_ + n_ubatch/r_min + 2;
+
+            struct buft_cmp {
+                bool operator()(const ggml_backend_buffer_type_t & a, const ggml_backend_buffer_type_t & b) const {
+                    return strcmp(ggml_backend_buft_name(a), ggml_backend_buft_name(b)) < 0;
+                }
+            };
+
+            std::map<ggml_backend_buffer_type_t, ggml_context_ptr, buft_cmp> ctx_map;
+
+            auto ctx_for_buft = [&](ggml_backend_buffer_type_t buft) -> ggml_context * {
+                auto it = ctx_map.find(buft);
+                if (it == ctx_map.end()) {
+                    ggml_init_params params = {
+                        /*.mem_size   =*/ size_t(2u*hp.n_layer()*ggml_tensor_overhead()),
+                        /*.mem_buffer =*/ NULL,
+                        /*.no_alloc   =*/ true,
+                    };
+                    ggml_context * ctx = ggml_init(params);
+                    if (ctx) {
+                        ctx_map.emplace(buft, ctx);
+                    }
+                    return ctx;
+                }
+                return it->second.get();
+            };
+
+            for (uint32_t il = 0; il < hp.n_layer(); ++il) {
+                if (!filter_idx(il) || hp.dsv4_compress_ratios[il] == 0) {
+                    continue;
+                }
+
+                ggml_backend_buffer_type_t buft = ggml_backend_cpu_buffer_type();
+                if (offload) {
+                    buft = ggml_backend_dev_buffer_type(model.dev_layer(il));
+                }
+
+                ggml_context * ctx = ctx_for_buft(buft);
+                if (!ctx) {
+                    throw std::runtime_error("failed to create ggml context for the pooled QSA keys");
+                }
+
+                ggml_tensor * t = ggml_new_tensor_3d(ctx, GGML_TYPE_F32,
+                        hp.indexer_head_size, pooled_rows_, pooled_ns_);
+                ggml_format_name(t, "qsa_pooled_l%d", il);
+
+                pooled_map.emplace((int32_t) il, (int32_t) pooled_layers.size());
+                pooled_layers.push_back({ il, t });
+            }
+
+            for (auto & [buft, ctx] : ctx_map) {
+                ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx.get(), buft);
+                if (!buf) {
+                    throw std::runtime_error("failed to allocate buffer for the pooled QSA keys");
+                }
+                ggml_backend_buffer_clear(buf, 0);
+                pooled_ctxs_bufs.emplace_back(std::move(ctx), ggml_backend_buffer_ptr(buf));
+            }
+        }
+    }
+}
+
+ggml_tensor * llama_memory_hybrid_idx::get_pooled(int32_t il) const {
+    const auto it = pooled_map.find(il);
+    return it == pooled_map.end() ? nullptr : pooled_layers[it->second].t;
+}
+
+uint32_t llama_memory_hybrid_idx::pooled_rows() const {
+    return pooled_rows_;
+}
+
+uint32_t llama_memory_hybrid_idx::pooled_scratch() const {
+    return pooled_scratch_;
+}
+
+uint32_t llama_memory_hybrid_idx::pooled_n_stream() const {
+    return pooled_ns_;
+}
+
+bool llama_memory_hybrid_idx::pooled_valid() const {
+    return pooled_valid_;
+}
 
 llama_memory_context_ptr llama_memory_hybrid_idx::init_batch(llama_batch_allocr & balloc, uint32_t n_ubatch, bool embd_all) {
     // note: repeats llama_memory_hybrid::init_batch, as the indexer needs the attention slot infos that the base context hides
@@ -142,6 +249,9 @@ void llama_memory_hybrid_idx::clear(bool data) {
     if (mem_idx) {
         mem_idx->clear(data);
     }
+
+    // no filled blocks left, so every pooled row is unreachable: a fresh start
+    pooled_valid_ = true;
 }
 
 bool llama_memory_hybrid_idx::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
@@ -154,6 +264,13 @@ bool llama_memory_hybrid_idx::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_po
         mem_idx->seq_rm(seq_id, p0, p1);
     }
 
+    // a partial removal needs nothing: un-filled blocks stop competing on their own,
+    // and a block only re-completes through a commit that overwrites its row.
+    // a full removal empties the (only, see the ctor) sequence, which revalidates like clear
+    if (p0 <= 0 && p1 < 0) {
+        pooled_valid_ = true;
+    }
+
     return get_mem_attn()->seq_rm(seq_id, p0, p1);
 }
 
@@ -162,6 +279,10 @@ void llama_memory_hybrid_idx::seq_cp(llama_seq_id seq_id_src, llama_seq_id seq_i
 
     if (mem_idx) {
         mem_idx->seq_cp(seq_id_src, seq_id_dst, p0, p1);
+    }
+
+    if (seq_id_src != seq_id_dst) {
+        pooled_valid_ = false;
     }
 }
 
@@ -179,6 +300,11 @@ void llama_memory_hybrid_idx::seq_add(llama_seq_id seq_id, llama_pos p0, llama_p
     if (mem_idx) {
         mem_idx->seq_add(seq_id, p0, p1, shift);
     }
+
+    // positions moved under the pooled keys (they carry rope), so they no longer match
+    if (shift != 0) {
+        pooled_valid_ = false;
+    }
 }
 
 void llama_memory_hybrid_idx::seq_div(llama_seq_id seq_id, llama_pos p0, llama_pos p1, int d) {
@@ -186,6 +312,10 @@ void llama_memory_hybrid_idx::seq_div(llama_seq_id seq_id, llama_pos p0, llama_p
 
     if (mem_idx) {
         mem_idx->seq_div(seq_id, p0, p1, d);
+    }
+
+    if (d != 1) {
+        pooled_valid_ = false;
     }
 }
 
@@ -196,6 +326,10 @@ std::map<ggml_backend_buffer_type_t, size_t> llama_memory_hybrid_idx::memory_bre
         for (const auto & buft_size : mem_idx->memory_breakdown()) {
             mb[buft_size.first] += buft_size.second;
         }
+    }
+
+    for (const auto & [ctx, buf] : pooled_ctxs_bufs) {
+        mb[ggml_backend_buffer_get_type(buf.get())] += ggml_backend_buffer_get_size(buf.get());
     }
 
     return mb;
@@ -244,6 +378,12 @@ void llama_memory_hybrid_idx::state_read(llama_io_read_i & io, llama_seq_id seq_
 
         throw;
     }
+
+    // the pooled rows are not part of the state blob: a restore brings back filled
+    // blocks whose rows here are stale, so fall back to re-pooling until a clear
+    if ((flags & LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY) == 0) {
+        pooled_valid_ = false;
+    }
 }
 
 void llama_memory_hybrid_idx::state_drop(llama_seq_id seq_id) {
@@ -273,15 +413,21 @@ void llama_memory_hybrid_idx::set_input_qsa(
         ggml_tensor * bias,
         const llama_ubatch * ubatch,
         uint32_t ratio,
-        bool blk_bias) const {
+        bool blk_bias,
+        ggml_tensor * commit_cells,
+        ggml_tensor * commit_rows,
+        ggml_tensor * commit_pos) const {
     GGML_ASSERT(ratio > 0);
     GGML_ASSERT(get_mem_idx() != nullptr);
 
     GGML_ASSERT(ggml_backend_buffer_is_host(cell_blk->buffer));
 
+    // the pooled path drops blk_cells and blk_pos: nothing in its graph reads them
+    GGML_ASSERT((blk_cells != nullptr && blk_pos != nullptr) || (blk_bias && commit_cells != nullptr));
+
     const int64_t n_kv     = cell_blk->ne[0];
     const int64_t n_ns     = cell_blk->ne[1];        // streams in this ubatch
-    const int64_t n_blocks = blk_pos->ne[0]/(4*n_ns);
+    const int64_t n_blocks = blk_pos != nullptr ? blk_pos->ne[0]/(4*n_ns) : bias->ne[0];
     const int64_t n_tokens = ubatch->n_tokens;
     const int64_t r        = ratio;
 
@@ -289,8 +435,8 @@ void llama_memory_hybrid_idx::set_input_qsa(
     const int64_t n_tps = n_tokens/n_ns;             // tokens per stream
 
     int32_t * dst_cell_blk  = (int32_t *) cell_blk->data;
-    int32_t * dst_blk_cells = (int32_t *) blk_cells->data;
-    int32_t * dst_blk_pos   = (int32_t *) blk_pos->data;
+    int32_t * dst_blk_cells = blk_cells != nullptr ? (int32_t *) blk_cells->data : nullptr;
+    int32_t * dst_blk_pos   = blk_pos   != nullptr ? (int32_t *) blk_pos->data   : nullptr;
     float   * dst_bias      = (float   *) bias->data;
 
     // a block is keyed on (sequence set, index bucket): a unified cache counts every sequence
@@ -315,15 +461,21 @@ void llama_memory_hybrid_idx::set_input_qsa(
     std::vector<int32_t> order;
     std::vector<int32_t> rank;
 
-    std::fill(dst_blk_pos, dst_blk_pos + 4*n_blocks*n_ns, 0);
+    // the pooled path drops the blk_cells input, but the commit plan still needs the
+    // per-block member map, so it lands in a local buffer instead
+    std::vector<int32_t> members(dst_blk_cells == nullptr ? r*n_blocks : 0);
+
+    if (dst_blk_pos != nullptr) {
+        std::fill(dst_blk_pos, dst_blk_pos + 4*n_blocks*n_ns, 0);
+    }
 
     for (int64_t s = 0; s < n_ns; ++s) {
         // ubatch index s*n_tps belongs to this stream; ask which cells array it uses
         const llama_seq_id seq_of_stream = ubatch->seq_id[s*n_tps][0];
         const auto & cells = get_mem_idx()->get_cells(seq_of_stream);
 
-        int32_t * cur_cell_blk  = dst_cell_blk  + s*n_kv;
-        int32_t * cur_blk_cells = dst_blk_cells + s*(r*n_blocks);
+        int32_t * cur_cell_blk  = dst_cell_blk + s*n_kv;
+        int32_t * cur_blk_cells = dst_blk_cells != nullptr ? dst_blk_cells + s*(r*n_blocks) : members.data();
 
         std::fill(cur_blk_cells, cur_blk_cells + r*n_blocks, 0);
 
@@ -469,7 +621,7 @@ void llama_memory_hybrid_idx::set_input_qsa(
 
         GGML_ASSERT(n_bid <= n_blocks);
 
-        for (int32_t b = 0; b < n_bid; ++b) {
+        for (int32_t b = 0; dst_blk_pos != nullptr && b < n_bid; ++b) {
             int32_t sec_pos[4] = { bid_idx[b], bid_idx[b], bid_idx[b], bid_idx[b] };
 
             if (ranked) {
@@ -505,6 +657,86 @@ void llama_memory_hybrid_idx::set_input_qsa(
             }
 
             cur_cell_blk[j] = blk_of[j] < 0 ? dead_bid : blk_of[j];
+        }
+
+        // commit plan for the pooled key cache: every full block one of this
+        // ubatch's tokens belongs to. That includes blocks completed here for
+        // the first time, and refills after a rollback. Re-commits are
+        // idempotent: the members are gathered fresh from the cache.
+        // The recurrent half of the model keeps positions sequential, so a
+        // ubatch touches contiguous blocks and the fixed slot count suffices.
+        if (commit_cells != nullptr) {
+            GGML_ASSERT(commit_rows != nullptr && commit_pos != nullptr);
+            GGML_ASSERT(n_ns == 1 && "qsa: the pooled cache only exists for one sequence");
+
+            const int64_t cap = commit_rows->ne[0];
+
+            // one scratch row per idle slot: set_rows destinations must not overlap
+            const int32_t row_scratch = (int32_t) pooled_scratch();
+            GGML_ASSERT(row_scratch + cap <= (int64_t) pooled_rows());
+
+            int32_t * dst_c_cells = (int32_t *) commit_cells->data;
+            int32_t * dst_c_rows  = (int32_t *) commit_rows->data;
+            int32_t * dst_c_pos   = (int32_t *) commit_pos->data;
+
+            // the scoring view reads pooled row b as graph block b, which only holds
+            // while the dense block ids match the position buckets: every bucket below
+            // the highest full one is itself full. Ranked mrope cells (an image in the
+            // cache) or a bucket gap breaks that, so drop the cache and let the next
+            // graph fall back to per-token re-pooling. This graph's selection reads a
+            // misaligned view for one ubatch, which only costs selection quality: the
+            // attention mask still bounds what any block exposes.
+            bool aligned = !ranked && one_seq;
+
+            for (int32_t b = 0; aligned && b < n_bid; ++b) {
+                aligned = bid_idx[b] == (int32_t) (b*r);
+            }
+
+            if (!aligned) {
+                pooled_valid_ = false;
+            }
+
+            int64_t n_commit = 0;
+            int64_t last_b   = -1;
+
+            for (int64_t ii = 0; aligned && ii < n_tps; ++ii) {
+                const llama_pos q = ubatch->pos[ii];
+                const int64_t   b = q/r;
+
+                if (b == last_b || b >= n_blocks) {
+                    continue;
+                }
+                last_b = b;
+
+                // only a full block has a key worth persisting; one_seq holds here,
+                // so a bucket chains at most one group
+                const int32_t g = grp_head[b];
+                if (g < 0 || grp_slots[g] != slots_full) {
+                    continue;
+                }
+
+                GGML_ASSERT(n_commit < cap && "qsa: commit plan overflow");
+
+                dst_c_rows[n_commit] = (int32_t) b;
+                for (int64_t m = 0; m < r; ++m) {
+                    dst_c_cells[n_commit*r + m] = cur_blk_cells[b*r + m];
+                }
+                for (int64_t sec = 0; sec < 4; ++sec) {
+                    dst_c_pos[sec*cap + n_commit] = (int32_t) (b*r);
+                }
+                n_commit++;
+            }
+
+            // idle slots pool cell 0 into their own scratch row, which nothing reads
+            for (; n_commit < cap; ++n_commit) {
+                dst_c_rows[n_commit] = row_scratch + (int32_t) n_commit;
+                for (int64_t m = 0; m < r; ++m) {
+                    dst_c_cells[n_commit*r + m] = 0;
+                }
+                for (int64_t sec = 0; sec < 4; ++sec) {
+                    dst_c_pos[sec*cap + n_commit] = 0;
+                }
+            }
         }
 
         for (int64_t ii = 0; ii < n_tps; ++ii) {
@@ -665,6 +897,18 @@ uint32_t llama_memory_hybrid_idx_context::get_n_stream() const {
     return ns_ubatch[i_cur];
 }
 
+ggml_tensor * llama_memory_hybrid_idx_context::get_pooled(int32_t il) const {
+    return mem ? mem->get_pooled(il) : nullptr;
+}
+
+uint32_t llama_memory_hybrid_idx_context::pooled_rows() const {
+    return mem ? mem->pooled_rows() : 0;
+}
+
+bool llama_memory_hybrid_idx_context::pooled_valid() const {
+    return mem && mem->pooled_valid();
+}
+
 void llama_memory_hybrid_idx_context::set_input_qsa(
         ggml_tensor * cell_blk,
         ggml_tensor * blk_cells,
@@ -672,8 +916,12 @@ void llama_memory_hybrid_idx_context::set_input_qsa(
         ggml_tensor * bias,
         const llama_ubatch * ubatch,
         uint32_t ratio,
-        bool blk_bias) const {
+        bool blk_bias,
+        ggml_tensor * commit_cells,
+        ggml_tensor * commit_rows,
+        ggml_tensor * commit_pos) const {
     GGML_ASSERT(mem != nullptr);
 
-    mem->set_input_qsa(cell_blk, blk_cells, blk_pos, bias, ubatch, ratio, blk_bias);
+    mem->set_input_qsa(cell_blk, blk_cells, blk_pos, bias, ubatch, ratio, blk_bias,
+                       commit_cells, commit_rows, commit_pos);
 }
