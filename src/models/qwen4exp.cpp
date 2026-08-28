@@ -365,7 +365,9 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_
 
     cur = build_hc_mix(inpL, model.hc_head_norm, model.hc_head_down, model.hc_head_up, nullptr, nullptr, -1);
     cb(cur, "result_norm", -1);
-    res->t_embd = cur;
+    // deliberately no res->t_embd: it is n_embd wide, while the context sizes its
+    // embedding buffer by n_embd_out (the wide hc stream). The MTP driver reads
+    // t_h_nextn; exporting t_embd here makes the readback run out of bounds.
 
     cur = build_lora_mm(model.output, cur, model.output_s);
     cb(cur, "result_output", -1);
@@ -755,9 +757,50 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
     score = ggml_reshape_3d(ctx0, score, n_blocks, n_tps, n_stream);
     cb(score, "indexer_score", il);
 
-    // one value per block, so it is cheaper to bias here than after the cells are expanded
     if (blk_bias) {
+        // Block-granular selection. The per-block bias already carries the tail,
+        // poolability and causality, so the block scores alone decide the top-k:
+        // no n_kv-wide score expansion and no n_kv-wide sort. Selecting
+        // indexer_top_k/r + 1 whole blocks covers the reference's
+        // top_k + r - 1 cells, overshooting by at most r - 1 cells in the
+        // boundary block. The per-cell attention mask still guards every cell,
+        // so the extra cells are merely visible, never invalid.
         score = ggml_add(ctx0, score, inp->bias);
+        cb(score, "indexer_score_blocks", il);
+
+        const int64_t width_b = std::min<int64_t>(n_blocks, (int64_t) hparams.indexer_top_k/r + 1);
+
+        ggml_tensor * top_b = ggml_cont(ctx0, ggml_top_k(ctx0, score, width_b));
+
+        // block-level additive mask: -inf everywhere, 0 at the selected blocks
+        ggml_tensor * bmask = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, 1, n_blocks, n_tps, n_stream);
+        bmask = ggml_fill(ctx0, bmask, -INFINITY);
+
+        ggml_tensor * top_b_idx = ggml_reshape_4d(ctx0, top_b, width_b, n_tps, n_stream, 1);
+
+        ggml_tensor * zeros = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, 1, width_b, n_tps, n_stream);
+        zeros = ggml_fill(ctx0, zeros, 0.0f);
+
+        bmask = ggml_set_rows(ctx0, bmask, zeros, top_b_idx);
+        bmask = ggml_reshape_3d(ctx0, bmask, n_blocks, n_tps, n_stream);
+
+        // every cell takes its block's mask value, through the same gather the
+        // score expansion used to take
+        ggml_tensor * cmask = ggml_get_rows(ctx0,
+                ggml_cont(ctx0, ggml_permute(ctx0, bmask, 1, 0, 2, 3)), inp->cell_blk);
+        cmask = ggml_cont(ctx0, ggml_permute(ctx0, cmask, 1, 0, 2, 3));
+
+        // fold in the per-cell attention mask and hand attention a ready mask
+        ggml_tensor * kq32 = kq_mask->type == GGML_TYPE_F32 ? kq_mask
+                           : ggml_cast(ctx0, kq_mask, GGML_TYPE_F32);
+        cmask = ggml_add(ctx0, cmask, ggml_reshape_3d(ctx0, kq32, n_kv, n_tps, n_stream));
+        cmask = ggml_reshape_4d(ctx0, cmask, n_kv, n_tps, 1, n_stream);
+        if (kq_mask->type != GGML_TYPE_F32) {
+            cmask = ggml_cast(ctx0, cmask, kq_mask->type);
+        }
+        cb(cmask, "indexer_qsa_mask", il);
+
+        return cmask;
     }
 
     // every token of a block gets the block score; the budget is whole blocks, so top-k cuts on a block boundary
@@ -765,13 +808,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
             ggml_cont(ctx0, ggml_permute(ctx0, score, 1, 0, 2, 3)), inp->cell_blk);
     expanded = ggml_cont(ctx0, ggml_permute(ctx0, expanded, 1, 0, 2, 3));
 
-    if (blk_bias) {
-        // flash attention keeps the mask in f16; the scores are f32
-        ggml_tensor * mask = kq_mask->type == GGML_TYPE_F32 ? kq_mask : ggml_cast(ctx0, kq_mask, GGML_TYPE_F32);
-        expanded = ggml_add(ctx0, expanded, ggml_reshape_3d(ctx0, mask, n_kv, n_tps, n_stream));
-    } else {
-        expanded = ggml_add(ctx0, expanded, inp->bias);
-    }
+    expanded = ggml_add(ctx0, expanded, inp->bias);
     cb(expanded, "indexer_score_tokens", il);
 
     // the reference returns indexer_top_k + compress_ratio - 1: whole blocks plus the tail
@@ -826,6 +863,22 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa(
     }
 
     ggml_tensor * kq_mask = inp->get_kq_mask();
+
+    if (top_k->type != GGML_TYPE_I32) {
+        // block-granular selection already produced the combined additive mask
+        ggml_tensor * q = q_cur;
+        ggml_tensor * k = mctx_cur->get_k(ctx0, il);
+        ggml_tensor * v = mctx_cur->get_v(ctx0, il);
+
+        ggml_tensor * cur = build_attn_mha(q, k, v, nullptr, top_k, nullptr, nullptr, kq_scale, il);
+        cb(cur, "kqv_out", il);
+
+        if (inp->self_v_rot) {
+            cur = llama_mul_mat_hadamard(ctx0, cur, inp->self_v_rot);
+        }
+
+        return cur;
+    }
 
     // prepare new kq mask - starts filled with -INFINITY
     ggml_tensor * kq_mask_all = ggml_fill(ctx0, kq_mask, -INFINITY);

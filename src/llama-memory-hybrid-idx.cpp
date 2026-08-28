@@ -440,9 +440,17 @@ void llama_memory_hybrid_idx_context::set_input_qsa(
                 // the caller adds the attention mask, which drops empty, foreign and future cells
                 float * cur_blk_bias = dst_bias + i*n_blocks;
 
+                // Entirely-future blocks get -inf so the bias alone decides block-level
+                // selection (the per-cell attention mask still guards the cells either
+                // way). The tail comparison stays as before for the query's own block.
+                const int64_t b_q = q/r;
+
                 for (int64_t b = 0; b < n_blocks; ++b) {
-                    // finite, so it can never meet a -inf and produce a nan
-                    cur_blk_bias[b] = b*r >= tail_start ? 1e9f : (filled[b] < r ? -INFINITY : 0.0f);
+                    // 1e9 is finite, so it can never meet a -inf and produce a nan
+                    cur_blk_bias[b] = b > b_q          ? -INFINITY
+                                    : b*r >= tail_start ? 1e9f
+                                    : filled[b] < r     ? -INFINITY
+                                                        : 0.0f;
                 }
 
                 continue;
