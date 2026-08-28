@@ -1135,7 +1135,10 @@ class ChatStore implements ChatStreamHost, ChatFlowsHost {
 				await DatabaseService.updateMessage(messageId, updates);
 			}
 		};
-		const perChatOverrides = conversationsStore.preferences.getAllMcpServerOverrides();
+		const toolPolicy = {
+			disabledToolCategories: conversationsStore.preferences.getDisabledToolCategories(),
+			disabledTools: conversationsStore.preferences.getDisabledTools()
+		};
 
 		{
 			const agenticResult = await agenticStore.runAgenticFlow({
@@ -1147,8 +1150,8 @@ class ChatStore implements ChatStreamHost, ChatFlowsHost {
 					...this.getApiOptions(),
 					...(effectiveModel ? { model: effectiveModel } : {})
 				},
-				perChatOverrides,
-				signal: abortController.signal
+				signal: abortController.signal,
+				toolPolicy
 			});
 
 			if (agenticResult.handled) {
