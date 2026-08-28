@@ -1,8 +1,10 @@
 #pragma once
 
 #include "llama-memory-hybrid.h"
+#include "llama-kv-cache.h"
 
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 //
@@ -31,6 +33,7 @@ public:
                             /* common */
                  uint32_t   n_seq_max,
                  uint32_t   n_rs_seq,
+                 uint32_t   n_ubatch,
                      bool   offload,
                      bool   unified,
                             /* layer filters */
@@ -75,6 +78,22 @@ public:
 
     llama_kv_cache * get_mem_idx() const;   // nullptr when the model carries no indexer
 
+    // Pooled QSA block keys: one scoring-ready (pooled, normed, roped) key per
+    // COMPLETED block per QSA layer, written incrementally by the graph as
+    // blocks complete, so the indexer stops re-pooling every block every token.
+    // Row index is block index = pos/ratio (allocated for n_seq_max == 1 only).
+    // Stale rows are harmless: the per-ubatch bias only lets fully-populated
+    // blocks compete, and a block only re-completes through a new commit.
+    ggml_tensor * get_pooled(int32_t il) const;  // F32 [idx_dim, pooled_rows, 1], nullptr if absent
+    uint32_t      pooled_rows() const;           // padded block capacity plus the scratch region
+    uint32_t      pooled_scratch() const;        // first scratch row: one per idle commit slot, never read
+    uint32_t      pooled_n_stream() const;
+
+    // false after an operation the pooled cache cannot follow (position shifts,
+    // a cross-seq copy, or a state restore, which does not carry pooled data):
+    // the graph then falls back to re-pooling per token until clear or a full seq_rm
+    bool pooled_valid() const;
+
 private:
     // forget seq_id (all of it if seq_id < 0) in every cache at once, so a failed restore cannot leave the caches out of step
     // seq_id < 0 drops the whole context, as the caches themselves do on a failed restore
@@ -85,6 +104,20 @@ private:
     llama_hparams hparams_idx;
 
     const std::unique_ptr<llama_kv_cache> mem_idx;
+
+    // pooled QSA block keys, one tensor per QSA layer (see get_pooled)
+    struct pooled_layer {
+        uint32_t      il;
+        ggml_tensor * t;
+    };
+
+    std::vector<pooled_layer> pooled_layers;
+    std::unordered_map<int32_t, int32_t> pooled_map;
+    std::vector<std::pair<ggml_context_ptr, ggml_backend_buffer_ptr>> pooled_ctxs_bufs;
+    uint32_t pooled_rows_    = 0;
+    uint32_t pooled_scratch_ = 0;
+    uint32_t pooled_ns_      = 1;
+    bool     pooled_valid_   = true;
 };
 
 class llama_memory_hybrid_idx_context : public llama_memory_hybrid_context {
@@ -137,9 +170,20 @@ public:
     //   bias      F32 [n_kv, n_tokens/ns, ns] -inf where invisible, large where always visible
     // blk_bias asks for the bias per block instead: [n_blocks, n_tokens/ns, ns]
     // the caller then adds the attention mask, the only part of the bias that varies within a block
+    // the commit tensors, when given (all or none), receive the pooled-cache commit plan:
+    //   commit_cells I32 [ratio*cap] member cells of each block this ubatch fills to completion
+    //   commit_rows  I32 [cap]      pooled row (= block index) per slot, the scratch row when idle
+    //   commit_pos   I32 [4*cap]    mrope position rows of each block's first token
     void set_input_qsa(ggml_tensor * cell_blk, ggml_tensor * blk_cells, ggml_tensor * blk_pos,
                        ggml_tensor * bias, const llama_ubatch * ubatch, uint32_t ratio,
-                       bool blk_bias) const;
+                       bool blk_bias,
+                       ggml_tensor * commit_cells = nullptr, ggml_tensor * commit_rows = nullptr,
+                       ggml_tensor * commit_pos = nullptr) const;
+
+    // pooled block-key cache of the parent memory (see llama_memory_hybrid_idx)
+    ggml_tensor * get_pooled(int32_t il) const;
+    uint32_t      pooled_rows() const;
+    bool          pooled_valid() const;
 
 private:
     const llama_memory_hybrid_idx * mem = nullptr;
