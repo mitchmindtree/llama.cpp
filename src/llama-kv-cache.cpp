@@ -1743,6 +1743,12 @@ static void set_input_kq_mask_impl(const args_set_input_kq_mask & args, T * data
 void llama_kv_cache::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const {
     const uint32_t n_tokens = ubatch->n_tokens;
 
+    // a graph that replaces masked attention wholesale (qwen4exp compact QSA)
+    // leaves this input unread, and an unread input gets no buffer
+    if (dst->buffer == nullptr) {
+        return;
+    }
+
     GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));
 
     const int64_t n_kv     = dst->ne[0];
