@@ -640,9 +640,12 @@ public:
         res &= bias->ne[0]     == (blk_bias ? n_blocks : n_kv);
         res &= bias->ne[1]     == params.ubatch.n_tokens/n_stream;
 
+        // the compact graph keeps blk_cells but drops blk_pos, so check them separately
         if (blk_cells != nullptr) {
             res &= blk_cells->ne[0] == (int64_t) ratio*n_blocks;
-            res &= blk_pos->ne[0]   == 4*n_blocks*n_stream;
+        }
+        if (blk_pos != nullptr) {
+            res &= blk_pos->ne[0] == 4*n_blocks*n_stream;
         }
 
         // the pooled key cache can lose validity between graphs (position shifts etc)
