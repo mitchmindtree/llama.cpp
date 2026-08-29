@@ -667,7 +667,10 @@ public:
     }
 
     // gather-based decode attention pays off only for small batches over a deep
-    // enough context; below that the masked path is cheap and covers everything
+    // enough context; below that the masked path is cheap and covers everything.
+    // Do not force LLAMA_QSA_COMPACT_MIN_BLOCKS below ~64 on Vulkan: the
+    // degenerate tiny gathers it produces (a handful of cells at startup
+    // probes) have caused a device-lost fault on RADV/gfx1151.
     static bool qsa_compact_wanted(int64_t n_tokens, int64_t n_blocks) {
         static const bool disabled = getenv("LLAMA_QSA_NO_COMPACT") != nullptr;
         static const int64_t min_blocks = [] {
