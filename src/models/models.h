@@ -2313,13 +2313,19 @@ struct llama_model_qwen4exp : public llama_model_base {
                             int * sections,
                             int   il);
 
-        // dense self-attention restricted to the cells that top_k names
+        // compact QSA selection for small decode batches: per ubatch token, the
+        // selected cells (I32 [len, 1]) and their additive attention mask (F16)
+        using qsa_compact_t = std::vector<std::pair<ggml_tensor *, ggml_tensor *>>;
+
+        // dense self-attention restricted to the cells that top_k names, or - when
+        // compact is non-empty - to exactly the gathered cells per token
         ggml_tensor * build_attn_qsa(
         llm_graph_input_attn_kv * inp,
                     ggml_tensor * q_cur,
                     ggml_tensor * k_cur,
                     ggml_tensor * v_cur,
                     ggml_tensor * top_k,
+            const qsa_compact_t & compact,
                           float   kq_scale,
                             int   il);
 
@@ -2327,14 +2333,16 @@ struct llama_model_qwen4exp : public llama_model_base {
         // so the layers sharing a ratio share one input set
         std::map<uint32_t, llm_graph_input_qsa *> qsa_inps;
 
-        // QSA: token indices this layer's queries may attend to, or nullptr for dense
+        // QSA: token indices this layer's queries may attend to, or nullptr for dense.
+        // When the compact path is active, fills `compact` and returns nullptr.
         ggml_tensor * build_qsa_top_k(
   const llama_memory_hybrid_idx_context * mctx_hyb,
                     ggml_tensor * cur,
                     ggml_tensor * inp_pos,
                     ggml_tensor * kq_mask,
                             int * sections,
-                            int   il);
+                            int   il,
+                  qsa_compact_t * compact);
 
         ggml_tensor * build_layer_attn_linear(
              llm_graph_input_rs * inp,

@@ -174,11 +174,18 @@ public:
     //   commit_cells I32 [ratio*cap] member cells of each block this ubatch fills to completion
     //   commit_rows  I32 [cap]      pooled row (= block index) per slot, the scratch row when idle
     //   commit_pos   I32 [4*cap]    mrope position rows of each block's first token
+    // the compact-attention tensors, when given (all or none), describe cells for a
+    // gather-based decode path (single stream only):
+    //   blk_valid F32 [ratio*n_blocks] 0 where blk_cells names a real member, -inf for an unused slot
+    //   pos_tbl   F32 [n_kv]           each cell's (section-0) position, 0 for empty cells
+    //   qpos      F32 [n_tokens]       each ubatch token's position
     void set_input_qsa(ggml_tensor * cell_blk, ggml_tensor * blk_cells, ggml_tensor * blk_pos,
                        ggml_tensor * bias, const llama_ubatch * ubatch, uint32_t ratio,
                        bool blk_bias,
                        ggml_tensor * commit_cells = nullptr, ggml_tensor * commit_rows = nullptr,
-                       ggml_tensor * commit_pos = nullptr) const;
+                       ggml_tensor * commit_pos = nullptr,
+                       ggml_tensor * blk_valid = nullptr, ggml_tensor * pos_tbl = nullptr,
+                       ggml_tensor * qpos = nullptr) const;
 
     // pooled block-key cache of the parent memory (see llama_memory_hybrid_idx)
     ggml_tensor * get_pooled(int32_t il) const;

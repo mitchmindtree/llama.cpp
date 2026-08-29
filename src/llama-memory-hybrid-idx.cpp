@@ -501,11 +501,16 @@ void llama_memory_hybrid_idx_context::set_input_qsa(
         bool blk_bias,
         ggml_tensor * commit_cells,
         ggml_tensor * commit_rows,
-        ggml_tensor * commit_pos) const {
+        ggml_tensor * commit_pos,
+        ggml_tensor * blk_valid,
+        ggml_tensor * pos_tbl,
+        ggml_tensor * qpos) const {
     GGML_ASSERT(ratio > 0);
     GGML_ASSERT(mem != nullptr && mem->get_mem_idx() != nullptr);
 
-    GGML_ASSERT(ggml_backend_buffer_is_host(cell_blk->buffer));
+    // the compact-attention graph reads neither cell_blk nor blk_pos, and an
+    // unread input gets no buffer: shapes stay readable, data may be null
+    GGML_ASSERT(cell_blk->buffer == nullptr || ggml_backend_buffer_is_host(cell_blk->buffer));
 
     // the pooled path drops blk_cells and blk_pos: nothing in its graph reads them
     GGML_ASSERT((blk_cells != nullptr && blk_pos != nullptr) || (blk_bias && commit_cells != nullptr));
@@ -524,6 +529,8 @@ void llama_memory_hybrid_idx_context::set_input_qsa(
     int32_t * dst_blk_pos   = blk_pos   != nullptr ? (int32_t *) blk_pos->data   : nullptr;
     float   * dst_bias      = (float   *) bias->data;
 
+    GGML_ASSERT(dst_bias != nullptr);
+
     // block b covers [b*ratio, (b+1)*ratio), so its first token is at b*ratio
     // all mrope sections carry it: exact for text, approximate for images
     if (dst_blk_pos) {
@@ -541,18 +548,38 @@ void llama_memory_hybrid_idx_context::set_input_qsa(
     std::vector<int32_t> filled(n_blocks);
     std::vector<int32_t> members(r*n_blocks);
 
+    // the compact-attention tensors describe a single stream, like the commit plan
+    GGML_ASSERT(blk_valid == nullptr || (pos_tbl != nullptr && qpos != nullptr && n_ns == 1));
+
+    if (qpos) {
+        float * dst_qpos = (float *) qpos->data;
+        for (int64_t i = 0; i < n_tokens; ++i) {
+            dst_qpos[i] = (float) ubatch->pos[i];
+        }
+    }
+
     for (int64_t s = 0; s < n_ns; ++s) {
         // ubatch index s*n_tps belongs to this stream; ask which cells array it uses
         const llama_seq_id seq_of_stream = ubatch->seq_id[s*n_tps][0];
         const auto & cells = mem->get_mem_idx()->get_cells(seq_of_stream);
 
-        int32_t * cur_cell_blk = dst_cell_blk + s*n_kv;
+        int32_t * cur_cell_blk = dst_cell_blk != nullptr ? dst_cell_blk + s*n_kv : nullptr;
 
         // an incomplete block cannot be pooled; the bias below forces those tail cells in
         // -1 means no usable block, and block 0 only keeps the gather in range
         std::fill(blk_of.begin(),  blk_of.end(),  -1);
         std::fill(filled.begin(),  filled.end(),   0);
         std::fill(members.begin(), members.end(),  0);
+
+        float * dst_blk_valid = blk_valid != nullptr ? (float *) blk_valid->data : nullptr;
+        float * dst_pos_tbl   = pos_tbl   != nullptr ? (float *) pos_tbl->data   : nullptr;
+
+        if (dst_blk_valid) {
+            std::fill(dst_blk_valid, dst_blk_valid + r*n_blocks, -INFINITY);
+        }
+        if (dst_pos_tbl) {
+            std::fill(dst_pos_tbl, dst_pos_tbl + n_kv, 0.0f);
+        }
 
         // a cell no block covers needs its own -inf, which a per-block bias cannot carry
         // every cache path keeps the position below the cell window, so this stays false
@@ -566,6 +593,10 @@ void llama_memory_hybrid_idx_context::set_input_qsa(
             const llama_pos p = cells.pos_get(j);
             const int64_t   b = p/r;
 
+            if (dst_pos_tbl) {
+                dst_pos_tbl[j] = (float) p;
+            }
+
             if (b >= n_blocks) {
                 oor = true;
                 continue;
@@ -574,6 +605,10 @@ void llama_memory_hybrid_idx_context::set_input_qsa(
             blk_of[j] = (int32_t) b;
             members[b*r + (p%r)] = (int32_t) j;
             filled[b]++;
+
+            if (dst_blk_valid) {
+                dst_blk_valid[b*r + (p%r)] = 0.0f;
+            }
         }
 
         GGML_ASSERT((!blk_bias || !oor) && "qsa: cell position runs past the cell window");
@@ -584,11 +619,13 @@ void llama_memory_hybrid_idx_context::set_input_qsa(
 
         // per-block mode keeps an unpooled cell's real block, so the block's own -inf reaches it
         // per-cell mode carries that -inf itself and only needs the gather in range
-        for (int64_t j = 0; j < n_kv; ++j) {
-            if (blk_of[j] >= 0 && filled[blk_of[j]] < r && !blk_bias) {
-                blk_of[j] = -1;
+        if (dst_cell_blk) {
+            for (int64_t j = 0; j < n_kv; ++j) {
+                if (blk_of[j] >= 0 && filled[blk_of[j]] < r && !blk_bias) {
+                    blk_of[j] = -1;
+                }
+                cur_cell_blk[j] = blk_of[j] < 0 ? 0 : blk_of[j];
             }
-            cur_cell_blk[j] = blk_of[j] < 0 ? 0 : blk_of[j];
         }
 
         // commit plan for the pooled key cache: every full block one of this

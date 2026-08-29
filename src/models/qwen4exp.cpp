@@ -607,14 +607,15 @@ ggml_tensor * llama_model_qwen4exp::graph::build_norm_gated(
 // one mean-pooled indexer key scores each block; set_input resolves the cache layout
 class llama_model_qwen4exp::llm_graph_input_qsa : public llm_graph_input_i {
 public:
-    llm_graph_input_qsa(const llama_memory_hybrid_idx_context * mctx, uint32_t ratio, bool blk_bias, bool pooled) :
-        mctx(mctx), ratio(ratio), blk_bias(blk_bias), pooled(pooled) {}
+    llm_graph_input_qsa(const llama_memory_hybrid_idx_context * mctx, uint32_t ratio, bool blk_bias, bool pooled, bool compact, bool v_ok) :
+        mctx(mctx), ratio(ratio), blk_bias(blk_bias), pooled(pooled), compact(compact), v_ok(v_ok) {}
     virtual ~llm_graph_input_qsa() = default;
 
     void set_input(const llama_ubatch * ubatch) override {
         mctx->get_idx()->set_input_k_idxs(k_idxs, ubatch);
         mctx->set_input_qsa(cell_blk, blk_cells, blk_pos, bias, ubatch, ratio, blk_bias,
-                            commit_cells, commit_rows, commit_pos);
+                            commit_cells, commit_rows, commit_pos,
+                            blk_valid, pos_tbl, qpos);
     }
 
     bool can_reuse(const llm_graph_params & params) override {
@@ -651,7 +652,26 @@ public:
             res &= commit_rows->ne[0] == params.ubatch.n_tokens/ratio + 2;
         }
 
+        // the compact path is per-ubatch-size, like the graph shapes generally
+        res &= compact == (pooled && v_ok && qsa_compact_wanted(params.ubatch.n_tokens, n_blocks));
+
+        if (compact) {
+            res &= qpos->ne[0]    == params.ubatch.n_tokens;
+            res &= pos_tbl->ne[0] == n_kv;
+        }
+
         return res;
+    }
+
+    // gather-based decode attention pays off only for small batches over a deep
+    // enough context; below that the masked path is cheap and covers everything
+    static bool qsa_compact_wanted(int64_t n_tokens, int64_t n_blocks) {
+        static const bool disabled = getenv("LLAMA_QSA_NO_COMPACT") != nullptr;
+        static const int64_t min_blocks = [] {
+            const char * s = getenv("LLAMA_QSA_COMPACT_MIN_BLOCKS");
+            return s != nullptr ? atoll(s) : (int64_t) 640;
+        }();
+        return !disabled && n_tokens <= 6 && n_blocks >= min_blocks;
     }
 
     // per stream: a cell index names a different token in each stream
@@ -666,6 +686,11 @@ public:
     ggml_tensor * commit_rows  = nullptr;   // I32 [cap]
     ggml_tensor * commit_pos   = nullptr;   // I32 [4*cap]
 
+    // compact-attention inputs (see set_input_qsa)
+    ggml_tensor * blk_valid = nullptr;      // F32 [ratio*n_blocks]
+    ggml_tensor * pos_tbl   = nullptr;      // F32 [n_kv]
+    ggml_tensor * qpos      = nullptr;      // F32 [n_tokens]
+
     const llama_memory_hybrid_idx_context * mctx;
     const uint32_t ratio;
 
@@ -674,6 +699,12 @@ public:
 
     // this graph commits into and scores from the persistent pooled block keys
     const bool pooled;
+
+    // this graph gathers the selected cells and runs compact attention per token
+    const bool compact;
+
+    // the V cache is row-gatherable (not transposed), a compact-path precondition
+    const bool v_ok;
 };
 
 ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
@@ -682,7 +713,8 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
         ggml_tensor *                           inp_pos,
         ggml_tensor *                           kq_mask,
         int *                                   sections,
-        int                                     il) {
+        int                                     il,
+        qsa_compact_t *                         compact) {
     const llama_kv_cache_context * mctx_idx = mctx_hyb->get_idx();
 
     const int64_t idx_dim  = hparams.indexer_head_size;
@@ -712,6 +744,12 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
     const bool pooled_on = blk_bias && n_stream == 1 &&
         mctx_hyb->pooled_valid() && mctx_hyb->pooled_rows() > 0 && mctx_hyb->get_pooled(il) != nullptr;
 
+    // gather-based attention over exactly the selected cells: only worth it for
+    // small decode batches over a deep context, and it needs row-gatherable V
+    const bool v_ok      = cparams.flash_attn;
+    const bool compact_on = pooled_on && v_ok &&
+        llm_graph_input_qsa::qsa_compact_wanted(n_tokens, n_blocks);
+
     // nothing above depends on the layer, so the layers sharing a ratio share one input set
     llm_graph_input_qsa * inp = nullptr;
 
@@ -719,7 +757,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
     if (it != qsa_inps.end()) {
         inp = it->second;
     } else {
-        auto qsa = std::make_unique<llm_graph_input_qsa>(mctx_hyb, (uint32_t) r, blk_bias, pooled_on);
+        auto qsa = std::make_unique<llm_graph_input_qsa>(mctx_hyb, (uint32_t) r, blk_bias, pooled_on, compact_on, v_ok);
 
         qsa->k_idxs   = mctx_idx->build_input_k_idxs(ctx0, ubatch);
         qsa->cell_blk = ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, n_kv, n_stream);
@@ -729,12 +767,24 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
         ggml_set_input(qsa->bias);
 
         // the pooled path never reads these, and an unread input gets no buffer
-        if (!pooled_on) {
+        // (the compact path reads blk_cells again for the member gather)
+        if (!pooled_on || compact_on) {
             qsa->blk_cells = ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, r*n_blocks, n_stream);
-            qsa->blk_pos   = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, 4*n_blocks*n_stream);
-
             ggml_set_input(qsa->blk_cells);
+        }
+        if (!pooled_on) {
+            qsa->blk_pos = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, 4*n_blocks*n_stream);
             ggml_set_input(qsa->blk_pos);
+        }
+
+        if (compact_on) {
+            qsa->blk_valid = ggml_new_tensor_1d(ctx0, GGML_TYPE_F32, r*n_blocks);
+            qsa->pos_tbl   = ggml_new_tensor_1d(ctx0, GGML_TYPE_F32, n_kv);
+            qsa->qpos      = ggml_new_tensor_1d(ctx0, GGML_TYPE_F32, n_tokens);
+
+            ggml_set_input(qsa->blk_valid);
+            ggml_set_input(qsa->pos_tbl);
+            ggml_set_input(qsa->qpos);
         }
 
         if (pooled_on) {
@@ -857,6 +907,51 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
 
         ggml_tensor * top_b = ggml_cont(ctx0, ggml_top_k(ctx0, score, width_b));
 
+        if (compact_on) {
+            // Gather-based decode attention: instead of expanding the selection
+            // into an n_kv-wide mask, hand build_attn_qsa the selected cells per
+            // token plus a small additive mask over them. Selected blocks are
+            // whole (the bias only admits full blocks and the always-visible
+            // tail), so only two per-cell facts remain: whether a blk_cells slot
+            // holds a real member, and causality inside the tail block.
+            GGML_ASSERT(compact != nullptr);
+
+            // one row per block, so gathering row b yields block b's member cells
+            ggml_tensor * blk_cells_2d = ggml_reshape_2d(ctx0, inp->blk_cells, r, n_blocks);
+            ggml_tensor * blk_valid_2d = ggml_reshape_2d(ctx0, inp->blk_valid, r, n_blocks);
+            ggml_tensor * pos_2d       = ggml_reshape_2d(ctx0, inp->pos_tbl, 1, n_kv);
+
+            const int64_t len = r*width_b;
+
+            compact->clear();
+
+            for (int64_t t = 0; t < n_tps; ++t) {
+                ggml_tensor * top_t = ggml_view_2d(ctx0, top_b, width_b, 1, top_b->nb[1], t*top_b->nb[1]);
+
+                ggml_tensor * cells_t = ggml_get_rows(ctx0, blk_cells_2d, top_t);
+                cells_t = ggml_reshape_2d(ctx0, cells_t, len, 1);
+
+                ggml_tensor * valid_t = ggml_get_rows(ctx0, blk_valid_2d, top_t);
+                valid_t = ggml_reshape_2d(ctx0, valid_t, len, 1);
+
+                ggml_tensor * pos_t = ggml_get_rows(ctx0, pos_2d, cells_t);
+                pos_t = ggml_reshape_2d(ctx0, pos_t, len, 1);
+
+                // future cells (pos > q) get a finite huge negative: it overflows
+                // to -inf in the f16 cast and can never meet an inf to make a nan
+                ggml_tensor * q_t = ggml_view_1d(ctx0, inp->qpos, 1, t*ggml_element_size(inp->qpos));
+                ggml_tensor * fut = ggml_scale(ctx0,
+                        ggml_step(ctx0, ggml_sub(ctx0, pos_t, q_t)), -3.0e38f);
+
+                ggml_tensor * mask_t = ggml_cast(ctx0, ggml_add(ctx0, valid_t, fut), GGML_TYPE_F16);
+                cb(mask_t, "indexer_compact_mask", il);
+
+                compact->emplace_back(cells_t, mask_t);
+            }
+
+            return nullptr;
+        }
+
         // block-level additive mask: -inf everywhere, 0 at the selected blocks
         ggml_tensor * bmask = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, 1, n_blocks, n_tps, n_stream);
         bmask = ggml_fill(ctx0, bmask, -INFINITY);
@@ -916,6 +1011,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa(
         ggml_tensor *             k_cur,
         ggml_tensor *             v_cur,
         ggml_tensor *             top_k,
+        const qsa_compact_t &     compact,
         float                     kq_scale,
         int                       il) {
     // rotate q/k/v before they reach a quantized cache, as the dense path does. the indexer
@@ -948,6 +1044,56 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa(
     }
 
     ggml_tensor * kq_mask = inp->get_kq_mask();
+
+    if (!compact.empty()) {
+        // Compact decode attention: per token, gather exactly the selected cells
+        // out of the cache and attend over them - the cost no longer scales with
+        // n_kv. get_rows dequantizes, and build_attn_mha casts F32 K/V to F16.
+        const int64_t n_tps = (int64_t) compact.size();
+        GGML_ASSERT(q_cur->ne[2] == n_tps);
+
+        ggml_tensor * k_all = mctx_cur->get_k(ctx0, il);   // [head_dim, n_head_kv, n_kv, 1]
+        ggml_tensor * v_all = mctx_cur->get_v(ctx0, il);
+
+        const int64_t hd_k      = k_all->ne[0];
+        const int64_t hd_v      = v_all->ne[0];
+        const int64_t n_head_kv = k_all->ne[1];
+        const int64_t n_kv_c    = k_all->ne[2];
+
+        // one row per cell, gatherable
+        ggml_tensor * k_rows = ggml_view_2d(ctx0, k_all, hd_k*n_head_kv, n_kv_c, k_all->nb[2], 0);
+        ggml_tensor * v_rows = ggml_view_2d(ctx0, v_all, hd_v*n_head_kv, n_kv_c, v_all->nb[2], 0);
+
+        ggml_tensor * cur = nullptr;
+
+        for (int64_t t = 0; t < n_tps; ++t) {
+            ggml_tensor * cells_t = compact[t].first;
+            ggml_tensor * mask_t  = compact[t].second;
+
+            const int64_t len = cells_t->ne[0];
+
+            ggml_tensor * kt = ggml_get_rows(ctx0, k_rows, cells_t);
+            kt = ggml_reshape_3d(ctx0, kt, hd_k, n_head_kv, len);
+
+            ggml_tensor * vt = ggml_get_rows(ctx0, v_rows, cells_t);
+            vt = ggml_reshape_3d(ctx0, vt, hd_v, n_head_kv, len);
+
+            ggml_tensor * qt = ggml_view_3d(ctx0, q_cur, q_cur->ne[0], q_cur->ne[1], 1,
+                    q_cur->nb[1], q_cur->nb[2], t*q_cur->nb[2]);
+
+            ggml_tensor * cur_t = build_attn_mha(qt, kt, vt, nullptr, mask_t, nullptr, nullptr, kq_scale, il);
+
+            cur = cur ? ggml_concat(ctx0, cur, cur_t, 1) : cur_t;
+        }
+
+        cb(cur, "kqv_out", il);
+
+        if (inp->self_v_rot) {
+            cur = llama_mul_mat_hadamard(ctx0, cur, inp->self_v_rot);
+        }
+
+        return cur;
+    }
 
     if (top_k->type != GGML_TYPE_I32) {
         // block-granular selection already produced the combined additive mask
@@ -1021,7 +1167,9 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn(
     const bool qsa = mctx_hyb != nullptr && mctx_hyb->get_idx() != nullptr &&
                      hparams.dsv4_compress_ratios[il] > 0;
 
-    ggml_tensor * top_k = qsa ? build_qsa_top_k(mctx_hyb, cur, inp_pos, inp->get_kq_mask(), sections, il) : nullptr;
+    qsa_compact_t compact;
+
+    ggml_tensor * top_k = qsa ? build_qsa_top_k(mctx_hyb, cur, inp_pos, inp->get_kq_mask(), sections, il, &compact) : nullptr;
 
     // Qwen3Next uses a single Q projection that outputs query + gate
     ggml_tensor * Qcur_full = build_lora_mm(model.layers[il].wq, cur, model.layers[il].wq_s); // [ (n_embd_head * 2) * n_head, n_tokens ]
@@ -1073,8 +1221,8 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn(
 
     const float kq_scale = hparams.f_attention_scale == 0.0f ? 1.0f / sqrtf(float(n_embd_head)) : hparams.f_attention_scale;
 
-    if (top_k) {
-        cur = build_attn_qsa(inp, Qcur, Kcur, Vcur, top_k, kq_scale, il);
+    if (top_k || !compact.empty()) {
+        cur = build_attn_qsa(inp, Qcur, Kcur, Vcur, top_k, compact, kq_scale, il);
     } else {
         cur = build_attn(inp,
                     nullptr, nullptr, nullptr,
