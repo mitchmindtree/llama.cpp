@@ -413,7 +413,9 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_
 
     cur = build_hc_mix(inpL, model.hc_head_norm, model.hc_head_down, model.hc_head_up, nullptr, nullptr, -1);
     cb(cur, "result_norm", -1);
-    res->t_embd = cur;
+    // deliberately no res->t_embd: it is n_embd wide, while the context sizes its
+    // embedding buffer by n_embd_out (the wide hc stream). The MTP driver reads
+    // t_h_nextn; exporting t_embd here makes the readback run out of bounds.
 
     cur = build_lora_mm(model.output, cur, model.output_s);
     cb(cur, "result_output", -1);
