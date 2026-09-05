@@ -423,13 +423,18 @@ void llama_memory_hybrid_idx::set_input_qsa(
     GGML_ASSERT(ggml_backend_buffer_is_host(cell_blk->buffer));
 
     // the pooled path drops blk_cells and blk_pos: nothing in its graph reads them
-    GGML_ASSERT((blk_cells != nullptr && blk_pos != nullptr) || (blk_bias && commit_cells != nullptr));
+    GGML_ASSERT((blk_cells != nullptr && blk_pos != nullptr) || commit_cells != nullptr);
 
     const int64_t n_kv     = cell_blk->ne[0];
     const int64_t n_ns     = cell_blk->ne[1];        // streams in this ubatch
-    const int64_t n_blocks = blk_pos != nullptr ? blk_pos->ne[0]/(4*n_ns) : bias->ne[0];
     const int64_t n_tokens = ubatch->n_tokens;
     const int64_t r        = ratio;
+
+    // without blk_pos the block count comes from the per-block bias, or from the
+    // cell count on the pooled gather path, whose bias is per cell
+    const int64_t n_blocks = blk_pos != nullptr ? blk_pos->ne[0]/(4*n_ns)
+                           : blk_bias           ? bias->ne[0]
+                                                : (n_kv + r - 1)/r;
 
     GGML_ASSERT(n_tokens % n_ns == 0);
     const int64_t n_tps = n_tokens/n_ns;             // tokens per stream

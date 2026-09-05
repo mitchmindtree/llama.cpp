@@ -653,8 +653,8 @@ ggml_tensor * llama_model_qwen4exp::graph::build_norm_gated(
 // one mean-pooled indexer key scores each block; set_input resolves the cache layout
 class llama_model_qwen4exp::llm_graph_input_qsa : public llm_graph_input_i {
 public:
-    llm_graph_input_qsa(const llama_memory_hybrid_idx_context * mctx, uint32_t ratio, bool blk_bias, bool pooled) :
-        mctx(mctx), ratio(ratio), blk_bias(blk_bias), pooled(pooled) {}
+    llm_graph_input_qsa(const llama_memory_hybrid_idx_context * mctx, uint32_t ratio, bool blk_bias, bool gather, bool pooled) :
+        mctx(mctx), ratio(ratio), blk_bias(blk_bias), gather(gather), pooled(pooled) {}
     virtual ~llm_graph_input_qsa() = default;
 
     void set_input(const llama_ubatch * ubatch) override {
@@ -691,7 +691,7 @@ public:
         }
 
         // the pooled key cache can lose validity between graphs (position shifts etc)
-        res &= pooled == (mctx->pooled_valid() && mctx->pooled_rows() > 0 && n_stream == 1 && blk_bias);
+        res &= pooled == (mctx->pooled_valid() && mctx->pooled_rows() > 0 && n_stream == 1 && (blk_bias || gather));
 
         if (pooled) {
             res &= commit_rows->ne[0] == params.ubatch.n_tokens/ratio + 2;
@@ -717,6 +717,9 @@ public:
 
     // the per-cell half of the bias is the attention mask, so only the per-block half is uploaded
     const bool blk_bias;
+
+    // this graph gathers the selected cells instead of masking the full cache
+    const bool gather;
 
     // this graph commits into and scores from the persistent pooled block keys
     const bool pooled;
@@ -757,9 +760,11 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
         kq_mask->ne[0] == n_kv && kq_mask->ne[1] == n_tps && kq_mask->ne[3] == n_stream &&
         cparams.causal_attn && !hparams.use_alibi;
 
-    // persistent pooled block keys: commit the blocks this ubatch completes, score the rest from the cache
-    // per-block selection carries the poolability guard, and one sequence keeps block = pos/ratio uncontested
-    const bool pooled_on = blk_bias && n_stream == 1 &&
+    // persistent pooled block keys: commit the blocks this ubatch completes, score the rest from the
+    // cache. Works with either bias mode: the per-block bias carries the poolability guard itself,
+    // and the gather path's per-cell bias -infs the cells of incomplete blocks, so a stale pooled
+    // row never competes. One sequence keeps block = pos/ratio uncontested.
+    const bool pooled_on = (blk_bias || gather) && n_stream == 1 &&
         mctx_hyb->pooled_valid() && mctx_hyb->pooled_rows() > 0 && mctx_hyb->get_pooled(il) != nullptr;
 
     // nothing above depends on the layer, so the layers sharing a ratio share one input set
@@ -769,7 +774,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
     if (it != qsa_inps.end()) {
         inp = it->second;
     } else {
-        auto qsa = std::make_unique<llm_graph_input_qsa>(mctx_hyb, (uint32_t) r, blk_bias, pooled_on);
+        auto qsa = std::make_unique<llm_graph_input_qsa>(mctx_hyb, (uint32_t) r, blk_bias, gather, pooled_on);
 
         qsa->k_idxs   = mctx_idx->build_input_k_idxs(ctx0, ubatch);
         qsa->cell_blk = ggml_new_tensor_2d(ctx0, GGML_TYPE_I32, n_kv, n_stream);
