@@ -1000,8 +1000,12 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa(
         const int64_t n_kv   = kf->ne[2];
         const int64_t ns     = kf->ne[3];
         const int64_t n_topk = top_k->ne[0];
+        const int64_t n_tps  = top_k->ne[1];         // tokens per stream
 
-        GGML_ASSERT(top_k->ne[1] == 1 && "QSA gather requires single-token-per-stream ubatches");
+        // each token owns a gathered KV set, batched along ne3 as (token, stream).
+        // build_attn_mha splits q's tokens across ne3 in memory order, which only
+        // matches when one of the two dims is 1: multi-stream stays single-token.
+        GGML_ASSERT((n_tps == 1 || ns == 1) && "QSA gather requires single-token or single-stream ubatches");
         GGML_ASSERT(qsa_bias != nullptr && qsa_bias->ne[0] == n_kv && "QSA gather requires the per-cell bias");
 
         // the heads of a cell are contiguous in the cache, so a cell can be gathered as one row
@@ -1013,26 +1017,31 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa(
         ggml_tensor * v_cells = ggml_view_4d(ctx0, vf, hd_v*n_h_kv, n_kv, 1, ns,
                 vf->nb[2], vf->nb[2]*n_kv, vf->nb[3], 0);
 
-        // top_k [n_topk, 1, 1, ns] -> the index layout ggml_get_rows expects: [n_topk, 1, ns, 1]
-        ggml_tensor * idx = ggml_reshape_4d(ctx0, top_k, n_topk, 1, ns, 1);
+        // get_rows pairs its index ne1 with the source ne2, so the two gathers need two
+        // index layouts. the cells view has ne2 = 1: flatten every token's list into the
+        // row dim and let the tokens of a stream read the same cells. the bias view gets
+        // ne2 = n_tps so each token's gather reads its own bias row.
+        ggml_tensor * idx_kv = ggml_reshape_4d(ctx0, top_k, n_topk*n_tps, 1, ns, 1);
+        ggml_tensor * idx_b  = ggml_reshape_4d(ctx0, top_k, n_topk, n_tps, ns, 1);
 
         // get_rows dequantizes the cells to F32; build_attn_mha casts to F16 for flash attention
-        ggml_tensor * k_g = ggml_get_rows(ctx0, k_cells, idx); // F32 [hd_k*n_h_kv, n_topk, 1, ns]
-        ggml_tensor * v_g = ggml_get_rows(ctx0, v_cells, idx); // F32 [hd_v*n_h_kv, n_topk, 1, ns]
+        ggml_tensor * k_g = ggml_get_rows(ctx0, k_cells, idx_kv); // F32 [hd_k*n_h_kv, n_topk*n_tps, 1, ns]
+        ggml_tensor * v_g = ggml_get_rows(ctx0, v_cells, idx_kv); // F32 [hd_v*n_h_kv, n_topk*n_tps, 1, ns]
 
-        k_g = ggml_reshape_4d(ctx0, k_g, hd_k, n_h_kv, n_topk, ns);
-        v_g = ggml_reshape_4d(ctx0, v_g, hd_v, n_h_kv, n_topk, ns);
+        k_g = ggml_reshape_4d(ctx0, k_g, hd_k, n_h_kv, n_topk, n_tps*ns);
+        v_g = ggml_reshape_4d(ctx0, v_g, hd_v, n_h_kv, n_topk, n_tps*ns);
         cb(k_g, "qsa_k_gathered", il);
         cb(v_g, "qsa_v_gathered", il);
 
         // the gathered cells' bias values already encode visibility: 0 for a selected block
         // member, 1e9 for the always-visible tail, -inf for anything the padded top-k width
         // pulled in that the query must not see. clamping to (-inf, 0] turns that into the
-        // attention mask over the gathered set.
-        ggml_tensor * b1 = ggml_view_4d(ctx0, qsa_bias, 1, n_kv, 1, ns,
-                qsa_bias->nb[0], qsa_bias->nb[1], qsa_bias->nb[3], 0);
-        ggml_tensor * m_g = ggml_get_rows(ctx0, b1, idx);            // F32 [1, n_topk, 1, ns]
-        m_g = ggml_reshape_4d(ctx0, m_g, n_topk, 1, 1, ns);
+        // attention mask over the gathered set. the bias is per token, so future cells
+        // stay masked inside a verify batch.
+        ggml_tensor * b1 = ggml_view_4d(ctx0, qsa_bias, 1, n_kv, n_tps, ns,
+                qsa_bias->nb[0], qsa_bias->nb[1], qsa_bias->nb[2], 0);
+        ggml_tensor * m_g = ggml_get_rows(ctx0, b1, idx_b);          // F32 [1, n_topk, n_tps, ns]
+        m_g = ggml_reshape_4d(ctx0, m_g, n_topk, 1, 1, n_tps*ns);
         m_g = ggml_clamp(ctx0, m_g, -INFINITY, 0.0f);
         m_g = ggml_cast(ctx0, m_g, GGML_TYPE_F16);                   // FA wants contiguous F16
         cb(m_g, "qsa_mask_gathered", il);
@@ -1125,7 +1134,14 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn(
 
         const int64_t n_stream = mctx_hyb->get_n_stream();
 
-        gather = n_tokens == n_stream && n_kv >= 4*width;
+        // single-token decode in any stream layout, plus small single-stream batches:
+        // the speculative verify batch (1 + n_draft tokens) is the decode path under
+        // draft-mtp, and without it gather would never engage while a draft is loaded.
+        // each token gathers its own top-k set (see build_attn_qsa). multi-stream
+        // multi-token stays masked: its q batch order interleaves streams differently.
+        const bool small = n_tokens == n_stream || (n_stream == 1 && n_tokens <= 8);
+
+        gather = small && n_kv >= 4*width;
     }
 
     ggml_tensor * top_k = qsa ? build_qsa_top_k(mctx_hyb, cur, inp_pos, inp->get_kq_mask(), sections, il, gather) : nullptr;
