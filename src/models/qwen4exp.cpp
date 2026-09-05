@@ -1121,9 +1121,14 @@ ggml_tensor * llama_model_qwen4exp::graph::build_layer_attn(
     // gather-based QSA decode: worth it once the cache is meaningfully deeper than the
     // top-k width; below that the masked path costs about the same. QWEN4EXP_QSA_GATHER=0
     // disables it (A/B lever, and an escape hatch).
+    // Off by default in this fork: on gfx1151 RADV the masked path already skips
+    // fully-masked FA tiles and the per-block bias avoids the big mask upload, so
+    // the gather's get_rows dequant plus its per-cell bias upload measured slower
+    // at every depth (11k -4.4, 115k -2.7 t/s, draft-mtp n-max 2, 2026-09-05).
+    // Revisit when Vulkan sparse FA (upstream #28105) lands.
     static const bool gather_enabled = [] {
         const char * e = getenv("QWEN4EXP_QSA_GATHER");
-        return e == nullptr || atoi(e) != 0;
+        return e != nullptr && atoi(e) != 0;
     }();
 
     bool gather = false;
