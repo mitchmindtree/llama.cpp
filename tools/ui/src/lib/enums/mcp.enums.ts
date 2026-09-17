@@ -45,8 +45,10 @@ export enum HealthCheckStatus {
  * Content types for MCP tool results
  */
 export enum MCPContentType {
+	AUDIO = 'audio',
 	IMAGE = 'image',
 	RESOURCE = 'resource',
+	RESOURCE_LINK = 'resource_link',
 	TEXT = 'text'
 }
 

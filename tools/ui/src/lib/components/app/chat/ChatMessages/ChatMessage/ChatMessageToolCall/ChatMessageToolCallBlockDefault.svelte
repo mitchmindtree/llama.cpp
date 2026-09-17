@@ -3,19 +3,25 @@
 	// Renders section.toolArgs / section.toolResult directly using the
 	// shared chrome shell.
 
+	import ChatMessageToolCallMedia from './ChatMessageToolCallMedia.svelte';
 	import ToolCallBlock from './ToolCallBlock.svelte';
 	import { Loader2 } from '@lucide/svelte';
 	import { MarkdownContent, SyntaxHighlightedCode } from '$lib/components/app';
 	import { MAX_HEIGHT_CODE_BLOCK } from '$lib/constants';
-	import { AttachmentType, FileTypeText, MimeTypeAudio, ToolResultKind } from '$lib/enums';
-	import type { AgenticSection, DatabaseMessageExtra, ToolResultLine } from '$lib/types';
+	import { FileTypeText, ToolResultKind, ToolResultSegmentKind } from '$lib/enums';
+	import type {
+		AgenticSection,
+		DatabaseMessageExtra,
+		ToolResultLine,
+		ToolResultSegment
+	} from '$lib/types';
 	import {
 		classifyToolResult,
 		formatJsonPretty,
 		getToolUi,
+		groupToolResultLines,
 		parseToolResultWithMedia
 	} from '$lib/utils';
-	import { createBase64DataUrl } from '$lib/utils/data-url';
 
 	interface Props {
 		section: AgenticSection;
@@ -32,6 +38,9 @@
 	const parsedLines: ToolResultLine[] = $derived(
 		section.toolResult ? parseToolResultWithMedia(section.toolResult, attachments) : []
 	);
+	// Markdown results render each text run as markdown and each attachment as
+	// a player or image in between, so media survives the markdown branch.
+	const segments: ToolResultSegment[] = $derived(groupToolResultLines(parsedLines));
 </script>
 
 <ToolCallBlock {isStreaming} meta={null} {onToggle} {open} {section} {title}>
@@ -102,7 +111,13 @@
 						maxHeight={MAX_HEIGHT_CODE_BLOCK}
 					/>
 				{:else if outputKind === ToolResultKind.MARKDOWN}
-					<MarkdownContent {attachments} content={section.toolResult} />
+					{#each segments as segment, i (i)}
+						{#if segment.kind === ToolResultSegmentKind.MEDIA}
+							<ChatMessageToolCallMedia media={segment.media} />
+						{:else}
+							<MarkdownContent {attachments} content={segment.text} />
+						{/if}
+					{/each}
 				{:else}
 					<div class="overflow-auto">
 						{#each parsedLines as line, i (i)}
@@ -111,25 +126,7 @@
 							</div>
 
 							{#if line.media}
-								{#if line.media.type === AttachmentType.AUDIO}
-									{@const audioMimeType = line.media.mimeType ?? MimeTypeAudio.MP3_MPEG}
-									<div class="mt-2 mb-2">
-										<audio class="w-full rounded-lg" controls>
-											<source
-												src={createBase64DataUrl(audioMimeType, line.media.base64Data)}
-												type={audioMimeType}
-											/>
-											Your browser does not support the audio element.
-										</audio>
-									</div>
-								{:else}
-									<img
-										alt={line.media.name}
-										class="mt-2 mb-2 h-auto max-w-full rounded-lg"
-										loading="lazy"
-										src={line.media.base64Url}
-									/>
-								{/if}
+								<ChatMessageToolCallMedia media={line.media} />
 							{/if}
 						{/each}
 					</div>

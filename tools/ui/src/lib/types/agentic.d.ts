@@ -16,7 +16,12 @@ import type {
 	DatabaseMessageExtraImageFile
 } from './database';
 import type { MessageRole, ToolSource } from '$lib/enums';
-import { AgenticSectionType, ContinueIntentKind, ToolCallType } from '$lib/enums';
+import {
+	AgenticSectionType,
+	ContinueIntentKind,
+	ToolCallType,
+	ToolResultSegmentKind
+} from '$lib/enums';
 
 /**
  * Agentic orchestration configuration.
@@ -223,6 +228,16 @@ export type ToolResultLine = {
 	text: string;
 	media?: DatabaseMessageExtraImageFile | DatabaseMessageExtraAudioFile;
 };
+
+/**
+ * A run of tool result text, or one media attachment, in document order
+ */
+export type ToolResultSegment =
+	| { kind: ToolResultSegmentKind.TEXT; text: string }
+	| {
+			kind: ToolResultSegmentKind.MEDIA;
+			media: DatabaseMessageExtraImageFile | DatabaseMessageExtraAudioFile;
+	  };
 
 /**
  * Classification of how a Continue click on an assistant message should resume
