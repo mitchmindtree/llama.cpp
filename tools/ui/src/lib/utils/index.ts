@@ -263,6 +263,8 @@ export {
 	buildAssistantRawOutput,
 	parseToolResultWithMedia,
 	groupToolResultLines,
+	extractToolResultMedia,
+	extractPromptArg,
 	splitSearchSummaryList,
 	hasAgenticContent,
 	classifyToolResult,
