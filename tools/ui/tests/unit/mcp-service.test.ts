@@ -346,4 +346,64 @@ describe('MCPService', () => {
 		expect(result.isError).toBe(false);
 		expect(result.content).toBe('{"accounts":[{"id":1}],"total":1}');
 	});
+
+	describe('formatToolResult content types', () => {
+		const callWith = async (content: unknown[]) => {
+			const connection = {
+				client: { callTool: vi.fn().mockResolvedValue({ content }) },
+				requestTimeoutMs: 9000,
+				serverName: 'test-server'
+			} as unknown as MCPConnection;
+
+			return MCPService.callTool(connection, { arguments: {}, name: 'tool' });
+		};
+
+		it('turns audio content into a data URL line between text items', async () => {
+			const result = await callWith([
+				{ text: 'Generated 1 clip', type: 'text' },
+				{ data: 'QUJD', mimeType: 'audio/wav', type: 'audio' },
+				{ text: 'Clip 1: seed 5', type: 'text' }
+			]);
+
+			expect(result.content).toBe('Generated 1 clip\ndata:audio/wav;base64,QUJD\nClip 1: seed 5');
+		});
+
+		it('defaults audio content without a mime type to mpeg', async () => {
+			const result = await callWith([{ data: 'QUJD', type: 'audio' }]);
+
+			expect(result.content).toBe('data:audio/mpeg;base64,QUJD');
+		});
+
+		it('renders resource links as markdown links', async () => {
+			const result = await callWith([
+				{ name: 'clip.wav', type: 'resource_link', uri: 'https://example.com/clip.wav' },
+				{ description: 'Lossless', type: 'resource_link', uri: 'https://example.com/b.wav' }
+			]);
+
+			expect(result.content).toBe(
+				'[clip.wav](https://example.com/clip.wav)\n' +
+					'[https://example.com/b.wav](https://example.com/b.wav) - Lossless'
+			);
+		});
+
+		it('turns media resource blobs into data URLs and never leaks other blobs', async () => {
+			const result = await callWith([
+				{
+					resource: { blob: 'QUJD', mimeType: 'audio/wav', uri: 'file:///a.wav' },
+					type: 'resource'
+				},
+				{
+					resource: { blob: 'QUJDRA==', mimeType: 'application/zip', uri: 'file:///a.zip' },
+					type: 'resource'
+				},
+				{ resource: { blob: 'QUJD' }, type: 'resource' }
+			]);
+
+			expect(result.content).toBe(
+				'data:audio/wav;base64,QUJD\n' +
+					'[Resource file:///a.zip (application/zip, 4 bytes)]\n' +
+					'[Resource blob (unknown type, 3 bytes)]'
+			);
+		});
+	});
 });

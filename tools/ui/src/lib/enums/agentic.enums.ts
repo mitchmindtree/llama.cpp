@@ -36,6 +36,14 @@ export enum ToolResultKind {
 }
 
 /**
+ * Segment of a tool result once media placeholders are split out of the text.
+ */
+export enum ToolResultSegmentKind {
+	MEDIA = 'media',
+	TEXT = 'text'
+}
+
+/**
  * Line classification for the unified-diff renderer of `edit_file` results.
  */
 export enum DiffLineKind {

@@ -259,6 +259,7 @@ export {
 	deriveAgenticSections,
 	buildAssistantRawOutput,
 	parseToolResultWithMedia,
+	groupToolResultLines,
 	splitSearchSummaryList,
 	hasAgenticContent,
 	classifyToolResult,

@@ -11,6 +11,7 @@ export {
 	ContinueIntentKind,
 	DiffLineKind,
 	ToolResultKind,
+	ToolResultSegmentKind,
 	ToolCallType
 } from './agentic.enums';
 

@@ -23,6 +23,7 @@ import type {
 import {
 	CORS_PROXY,
 	CORS_PROXY_ENDPOINT,
+	DEFAULT_AUDIO_MIME_TYPE,
 	DEFAULT_CLIENT_VERSION,
 	DEFAULT_IMAGE_MIME_TYPE,
 	DEFAULT_MCP_CONFIG,
@@ -34,7 +35,8 @@ import {
 	MCPContentType,
 	MCPLogLevel,
 	MCPRefType,
-	MCPTransportType
+	MCPTransportType,
+	MimeTypePrefix
 } from '$lib/enums';
 import type {
 	ClientCapabilities,
@@ -74,7 +76,11 @@ interface ToolResultContentItem {
 	text?: string;
 	data?: string;
 	mimeType?: string;
-	resource?: { text?: string; blob?: string; uri?: string };
+	/** resource_link fields */
+	uri?: string;
+	name?: string;
+	description?: string;
+	resource?: { text?: string; blob?: string; uri?: string; mimeType?: string };
 }
 
 interface ToolCallResult {
@@ -1129,6 +1135,29 @@ export class MCPService {
 		};
 	}
 
+	/**
+	 * Media blobs become a data URL line so the agentic store lifts them into
+	 * attachments. Anything else is summarised: bare base64 in the tool result
+	 * would be rendered verbatim and sent to the model.
+	 */
+	private static formatResourceBlob(resource: {
+		blob?: string;
+		uri?: string;
+		mimeType?: string;
+	}): string {
+		const blob = resource.blob ?? '';
+		const mimeType = resource.mimeType ?? '';
+
+		if (mimeType.startsWith(MimeTypePrefix.IMAGE) || mimeType.startsWith(MimeTypePrefix.AUDIO)) {
+			return createBase64DataUrl(mimeType, blob);
+		}
+
+		const padding = blob.endsWith('==') ? 2 : blob.endsWith('=') ? 1 : 0;
+		const bytes = Math.floor((blob.length * 3) / 4) - padding;
+
+		return `[Resource ${resource.uri ?? 'blob'} (${mimeType || 'unknown type'}, ${bytes} bytes)]`;
+	}
+
 	private static formatSingleContent(content: ToolResultContentItem): string {
 		if (content.type === MCPContentType.TEXT && content.text) {
 			return content.text;
@@ -1138,12 +1167,22 @@ export class MCPService {
 			return createBase64DataUrl(content.mimeType ?? DEFAULT_IMAGE_MIME_TYPE, content.data);
 		}
 
+		if (content.type === MCPContentType.AUDIO && content.data) {
+			return createBase64DataUrl(content.mimeType ?? DEFAULT_AUDIO_MIME_TYPE, content.data);
+		}
+
+		if (content.type === MCPContentType.RESOURCE_LINK && content.uri) {
+			const link = `[${content.name ?? content.uri}](${content.uri})`;
+
+			return content.description ? `${link} - ${content.description}` : link;
+		}
+
 		if (content.type === MCPContentType.RESOURCE && content.resource) {
 			const resource = content.resource;
 
 			if (resource.text) return resource.text;
 
-			if (resource.blob) return resource.blob;
+			if (resource.blob) return this.formatResourceBlob(resource);
 
 			return JSON.stringify(resource);
 		}

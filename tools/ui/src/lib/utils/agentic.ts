@@ -11,9 +11,15 @@ import {
 	AttachmentType,
 	ContinueIntentKind,
 	MessageRole,
-	ToolResultKind
+	ToolResultKind,
+	ToolResultSegmentKind
 } from '$lib/enums';
-import type { AgenticSection, ContinueIntent, ToolResultLine } from '$lib/types/agentic';
+import type {
+	AgenticSection,
+	ContinueIntent,
+	ToolResultLine,
+	ToolResultSegment
+} from '$lib/types/agentic';
 import type { ApiChatCompletionToolCall } from '$lib/types/api';
 import type {
 	DatabaseMessage,
@@ -361,13 +367,13 @@ export function parseToolResultWithMedia(
 	toolResult: string,
 	extras?: DatabaseMessageExtra[]
 ): ToolResultLine[] {
-	// Cache key includes image attachment names so we recompute when
+	// Cache key includes media attachment names so we recompute when
 	// attachments change, even if the count stays the same.
-	const imageNames = (extras ?? [])
-		.filter((e): e is DatabaseMessageExtraImageFile => e.type === AttachmentType.IMAGE)
+	const mediaNames = (extras ?? [])
+		.filter((e) => e.type === AttachmentType.IMAGE || e.type === AttachmentType.AUDIO)
 		.map((e) => e.name)
 		.join(NEWLINE);
-	const cacheKey = `${imageNames}:${toolResult}`;
+	const cacheKey = `${mediaNames}:${toolResult}`;
 	const cached = toolResultLinesCache.get(cacheKey);
 
 	if (cached !== undefined) return cached;
@@ -395,6 +401,34 @@ export function parseToolResultWithMedia(
 	toolResultLinesCache.set(cacheKey, result);
 
 	return result;
+}
+
+/**
+ * Group parsed tool result lines into runs of text and single media items, so
+ * a markdown result can be rendered as markdown around inline players and
+ * images. The `[Attachment saved: ...]` placeholder line is dropped: the media
+ * itself stands in for it.
+ */
+export function groupToolResultLines(lines: ToolResultLine[]): ToolResultSegment[] {
+	const segments: ToolResultSegment[] = [];
+
+	for (const line of lines) {
+		if (line.media) {
+			segments.push({ kind: ToolResultSegmentKind.MEDIA, media: line.media });
+
+			continue;
+		}
+
+		const last = segments.at(-1);
+
+		if (last !== undefined && last.kind === ToolResultSegmentKind.TEXT) {
+			last.text += NEWLINE + line.text;
+		} else {
+			segments.push({ kind: ToolResultSegmentKind.TEXT, text: line.text });
+		}
+	}
+
+	return segments;
 }
 
 /** Bounded cache for classifyToolResult results. */

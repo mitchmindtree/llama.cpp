@@ -1,11 +1,11 @@
 <script lang="ts">
+	import ChatMessageToolCallMedia from './ChatMessageToolCallMedia.svelte';
 	import { parseReadMediaMeta } from './parsers/read-media';
 	import ToolCallBlock from './ToolCallBlock.svelte';
 	import { ATTACHMENT_SAVED_REGEX } from '$lib/constants/agentic.constants';
-	import { AttachmentType, MimeTypeAudio } from '$lib/enums';
+	import { AttachmentType } from '$lib/enums';
 	import type { DatabaseMessageExtraAudioFile, DatabaseMessageExtraImageFile } from '$lib/types';
 	import type { AgenticSection } from '$lib/types';
-	import { createBase64DataUrl } from '$lib/utils/data-url';
 
 	interface Props {
 		section: AgenticSection;
@@ -39,8 +39,6 @@
 			) ?? null
 		);
 	});
-
-	const audioMimeType = $derived(readMediaMeta?.mimeType ?? MimeTypeAudio.MP3_MPEG);
 </script>
 
 <ToolCallBlock {isStreaming} meta={readMediaMeta} {onToggle} {open} {section}>
@@ -56,25 +54,13 @@
 				<div class="rounded bg-muted/20 p-2 text-xs text-muted-foreground/70 italic">
 					Media attachment not found in message extras
 				</div>
-			{:else if mediaAttachment.type === AttachmentType.AUDIO}
-				<div class="mt-2">
-					<audio class="w-full rounded-lg" controls>
-						<source
-							src={createBase64DataUrl(audioMimeType, mediaAttachment.base64Data)}
-							type={audioMimeType}
-						/>
-						Your browser does not support the audio element.
-					</audio>
-				</div>
 			{:else}
-				<div class="mt-2">
-					<img
-						alt={readMediaMeta?.fileName ?? 'media'}
-						class="max-h-[60vh] max-w-full rounded-lg object-contain shadow-lg"
-						loading="lazy"
-						src={mediaAttachment.base64Url}
-					/>
-				</div>
+				<ChatMessageToolCallMedia
+					alt={readMediaMeta?.fileName ?? 'media'}
+					class="mt-2"
+					imageClass="max-h-[60vh] max-w-full rounded-lg object-contain shadow-lg"
+					media={mediaAttachment}
+				/>
 			{/if}
 
 			{#if readMediaMeta?.sizeBytes || readMediaMeta?.mimeType}

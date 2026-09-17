@@ -202,6 +202,7 @@ export type {
 	SteeringMessage,
 	AgenticSection,
 	ToolResultLine,
+	ToolResultSegment,
 	ContinueIntent
 } from './agentic';
 

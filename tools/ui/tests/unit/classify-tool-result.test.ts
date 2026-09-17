@@ -19,6 +19,14 @@ describe('classifyToolResult', () => {
 			expect(classifyToolResult('Hello, this is just some text.')).toBe('text');
 		});
 
+		it('returns text for a sound_generate result with attachment placeholders', () => {
+			expect(
+				classifyToolResult(
+					'Generated 2 sfx clip(s) for "door" (8 s each).\n[Attachment saved: mcp-attachment-1-0.wav]\nClip 1: seed 5, 8 s, 1.4 MB'
+				)
+			).toBe('text');
+		});
+
 		it('returns text for shell-style line listings', () => {
 			expect(classifyToolResult('file1.java\nfile2.java\nfile3.java\n')).toBe('text');
 		});
