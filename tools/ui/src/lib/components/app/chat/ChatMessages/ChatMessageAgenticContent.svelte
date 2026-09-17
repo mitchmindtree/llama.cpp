@@ -1,5 +1,6 @@
 <script lang="ts">
 	import ChatMessageToolCallBlock from './ChatMessage/ChatMessageToolCall/ChatMessageToolCallBlock.svelte';
+	import ChatMessageToolCallMediaStrip from './ChatMessage/ChatMessageToolCall/ChatMessageToolCallMediaStrip.svelte';
 	import ChatMessageReasoningBlock from './ChatMessageReasoningBlock.svelte';
 	import {
 		ChatMessageActionCardContinueRequest,
@@ -197,6 +198,10 @@
 			open={isExpanded(index, section)}
 			{section}
 		/>
+
+		{#if !isExpanded(index, section)}
+			<ChatMessageToolCallMediaStrip {section} />
+		{/if}
 	{/if}
 {/snippet}
 

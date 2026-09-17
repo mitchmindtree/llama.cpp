@@ -230,6 +230,14 @@ export type ToolResultLine = {
 };
 
 /**
+ * One media attachment of a tool result with the text line that followed it
+ */
+export type ToolResultMediaItem = {
+	media: DatabaseMessageExtraImageFile | DatabaseMessageExtraAudioFile;
+	caption?: string;
+};
+
+/**
  * A run of tool result text, or one media attachment, in document order
  */
 export type ToolResultSegment =

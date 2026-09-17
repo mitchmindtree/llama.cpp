@@ -203,6 +203,7 @@ export type {
 	AgenticSection,
 	ToolResultLine,
 	ToolResultSegment,
+	ToolResultMediaItem,
 	ContinueIntent
 } from './agentic';
 

@@ -18,6 +18,7 @@ import type {
 	AgenticSection,
 	ContinueIntent,
 	ToolResultLine,
+	ToolResultMediaItem,
 	ToolResultSegment
 } from '$lib/types/agentic';
 import type { ApiChatCompletionToolCall } from '$lib/types/api';
@@ -610,4 +611,50 @@ export function classifyContinueIntent(messages: DatabaseMessage[], idx: number)
 	}
 
 	return { kind: ContinueIntentKind.RERUN_TURN, truncateAfter: idx - 1 };
+}
+
+/**
+ * Media attachments of a tool result with the text line that follows each
+ * placeholder as its caption, e.g. a clip's seed line. Lets the message body
+ * show players and images without expanding the tool block.
+ */
+export function extractToolResultMedia(section: AgenticSection): ToolResultMediaItem[] {
+	if (!section.toolResult || !section.toolResultExtras?.length) return [];
+
+	const lines = parseToolResultWithMedia(section.toolResult, section.toolResultExtras);
+	const items: ToolResultMediaItem[] = [];
+
+	for (let i = 0; i < lines.length; i++) {
+		const media = lines[i].media;
+
+		if (!media) continue;
+
+		const next = lines[i + 1];
+		const caption = next && !next.media ? next.text.trim() : '';
+
+		items.push(caption ? { caption, media } : { media });
+	}
+
+	return items;
+}
+
+/**
+ * The `prompt` string of a tool call's arguments, when it has one.
+ */
+export function extractPromptArg(toolArgs?: string): string | undefined {
+	if (!toolArgs) return undefined;
+
+	try {
+		const parsed: unknown = JSON.parse(toolArgs);
+
+		if (parsed && typeof parsed === 'object' && 'prompt' in parsed) {
+			const prompt = (parsed as { prompt?: unknown }).prompt;
+
+			return typeof prompt === 'string' && prompt.trim() ? prompt.trim() : undefined;
+		}
+	} catch {
+		// Not JSON (still streaming, or a non-JSON tool).
+	}
+
+	return undefined;
 }
