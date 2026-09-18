@@ -1987,6 +1987,14 @@ int llama_context::decode(const llama_batch & batch_inp) {
                 GGML_ASSERT((offset + n_rows)*n_embd <= (int64_t) embd_nextn.size);
                 ggml_backend_tensor_get_async(backend_h, t_h_nextn, embd_nextn_out, 0, n_rows*n_embd*sizeof(float));
                 extracted_all_tokens = extracted_all_tokens || !masked;
+
+                // the copy is only recorded on the backend stream. backends that track hazards within
+                // one graph (Vulkan) let the next ubatch overwrite the source before it executes, so
+                // wait for it; the unmasked copy only happens during prompt processing, where the
+                // wait is a small part of the ubatch cost
+                if (!masked) {
+                    ggml_backend_synchronize(backend_h);
+                }
             }
         }
 
@@ -2266,6 +2274,8 @@ bool llama_context::extract_layer_inputs(const llm_graph_result * res, const lla
         GGML_ASSERT(backend != nullptr);
         // Tensor-split backends require a zero source offset.
         ggml_backend_tensor_get_async(backend, t, embd_layer_inp[il].data + dst_offset, 0, nbytes);
+        // same hazard as the nextn readback in decode: the next ubatch reuses the source buffer
+        ggml_backend_synchronize(backend);
         extracted = true;
     }
     return extracted;
