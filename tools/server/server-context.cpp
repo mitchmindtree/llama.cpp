@@ -2361,7 +2361,14 @@ private:
         cur.update_pos(slot.prompt.n_tokens() - n_tokens_cur, pos_min, pos_max);
 
         cur.update_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
-        cur.update_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+        // a draft context that can seq_rm partial sequences is rewound with the target instead of
+        // restored from the checkpoint (load_dft is a no-op on empty data), so its state is only
+        // captured when a rewind is impossible or bounded. llama_kv_cache::state_write ignores
+        // PARTIAL_ONLY, so this otherwise serializes the whole draft KV of the sequence on every
+        // prompt checkpoint.
+        if (ctx_dft_seq_rm_type != COMMON_CONTEXT_SEQ_RM_TYPE_PART) {
+            cur.update_dft(ctx_dft, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+        }
         // stash the draft's speculative state with the checkpoint
         common_speculative_get_state(spec.get(), slot.id, cur.data_spec);
 
