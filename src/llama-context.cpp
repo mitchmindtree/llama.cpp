@@ -969,7 +969,7 @@ float * llama_context::get_embeddings_nextn_ith(int32_t i) {
 
         const uint32_t n_embd = model.hparams.n_embd_out();
 
-        if (!cparams.embeddings_nextn_masked) {
+        if (!embd_nextn_masked_output) {
             // unmasked: nextn rows are stored densely, indexed by raw token position.
             if (i < 0 || (size_t)(i + 1) * n_embd > embd_nextn.size) {
                 throw std::runtime_error(format("out of range [0, %zu)", embd_nextn.size / n_embd));
@@ -1444,6 +1444,10 @@ int llama_context::encode(const llama_batch & batch_inp) {
     }
 
     const uint32_t n_tokens = balloc->get_n_tokens();
+
+    // a new evaluation invalidates any permutation the previous one left pending
+    output_swaps.clear();
+    embd_token_ids.clear();
 
     // [TAG_NO_CACHE_PAD]
     // TODO: add new split mode where we pad the input sequences so that ubatch.equal_seqs == true
@@ -2102,6 +2106,10 @@ uint32_t llama_context::output_reserve(int32_t n_outputs) {
         embd_nextn.size = (size_t) n_embd_out * n_batch;
     }
 
+    // recorded here so the row domain the buffer is filled in cannot disagree with the nextn
+    // mode set for the next evaluation before the buffer is read
+    embd_nextn_masked_output = cparams.embeddings_nextn_masked;
+
     for (bool enabled : cparams.embeddings_layer_inp) {
         if (enabled) {
             embd_layer_inp_float_count += (size_t) n_embd * n_batch;
@@ -2283,7 +2291,7 @@ void llama_context::output_reorder() {
             }
         }
 
-        if (embd_nextn.size > 0 && cparams.embeddings_nextn_masked) {
+        if (embd_nextn.size > 0 && embd_nextn_masked_output) {
             for (uint64_t k = 0; k < n_embd_out; k++) {
                 std::swap(embd_nextn.data[i0*n_embd_out + k], embd_nextn.data[i1*n_embd_out + k]);
             }
@@ -2325,7 +2333,7 @@ void llama_context::output_reorder() {
         while (embd_token_ids[i] != (int32_t) i) {
             const int32_t j = embd_token_ids[i];
             GGML_ASSERT(j >= 0 && (size_t) j < embd_token_ids.size());
-            if (embd_nextn.has_data() && !cparams.embeddings_nextn_masked) {
+            if (embd_nextn.has_data() && !embd_nextn_masked_output) {
                 for (size_t k = 0; k < n_embd_out; ++k) {
                     std::swap(embd_nextn.data[i*n_embd_out + k], embd_nextn.data[j*n_embd_out + k]);
                 }
