@@ -8,6 +8,7 @@
 #include "../src/llama-memory.h"
 #include "../src/llama-vocab.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <initializer_list>
 #include <map>
@@ -1170,6 +1171,49 @@ static void test_mtp_embd_width(testing & t) {
     });
 }
 
+static void test_batch_idxs(testing & t) {
+    llama_vocab vocab;
+
+    // one long sequence without outputs next to three short all-output sequences: split_equal
+    // groups tokens per sequence per ubatch, so the rows of a token-indexed output buffer land
+    // in ubatch order and batch_idxs is what maps them back
+    t.test("split_equal_records_batch_idxs", [&](testing & t) {
+        batch_builder bb;
+        for (int i = 0; i < 12; ++i) {
+            bb.add(i, {0}, false);
+        }
+        for (llama_seq_id s = 1; s <= 3; ++s) {
+            for (int i = 0; i < 3; ++i) {
+                bb.add(i, {s}, true);
+            }
+        }
+
+        llama_batch_allocr ba(1);
+        t.assert_true(ba.init(bb.b, vocab, false));
+
+        std::vector<int32_t> idxs;
+        bool identity = true;
+        for (llama_ubatch ub = ba.split_equal(8, false, 0); ub.n_tokens > 0; ub = ba.split_equal(8, false, 0)) {
+            t.assert_equal((size_t) ub.n_tokens, ub.data->batch_idxs.size());
+            for (uint32_t i = 0; i < ub.n_tokens; ++i) {
+                const int32_t idx = ub.data->batch_idxs[i];
+                // the embd values encode the batch index, so the recorded index must match the copied row
+                t.assert_equal(100.0f*idx, ub.embd[i*bb.n_embd]);
+                identity = identity && idx == (int32_t) idxs.size();
+                idxs.push_back(idx);
+            }
+        }
+
+        std::vector<int32_t> sorted = idxs;
+        std::sort(sorted.begin(), sorted.end());
+        t.assert_equal((size_t) 21, idxs.size());
+        for (size_t i = 0; i < sorted.size(); ++i) {
+            t.assert_equal((int32_t) i, sorted[i]);
+        }
+        t.assert_true("ubatch order differs from batch order", !identity);
+    });
+}
+
 int main(int argc, char ** argv) {
     testing t;
 
@@ -1191,6 +1235,7 @@ int main(int argc, char ** argv) {
     t.test("compat",         test_compat);
     t.test("split",          test_split);
     t.test("keep_tail",      test_keep_tail);
+    t.test("batch_idxs",     test_batch_idxs);
     t.test("mrope",          test_mrope);
     t.test("mtp_embd_width", test_mtp_embd_width);
 
