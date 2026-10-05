@@ -108,29 +108,16 @@ static ggml_backend_buffer_t ggml_backend_buft_alloc_buffer_n_default(ggml_backe
 
         struct ggml_tallocr tallocr = ggml_tallocr_new(buffer);
 
-        // allocate tensors in the current buffer
+        // allocate the parent tensors in the current buffer; views are initialized once every
+        // buffer exists, because a view can sit in a later plan item than its source (or in a
+        // view-only tail that gets no item at all) and would otherwise keep data == NULL
         struct ggml_tensor * t_failed = NULL;
         for (int j = item.first; j < item.last; j++) {
             struct ggml_tensor * t = tensors[j];
-            if (t->data == NULL) {
-                if (t->view_src == NULL) {
-                    if (ggml_tallocr_alloc(&tallocr, t) != GGML_STATUS_SUCCESS) {
-                        t_failed = t;
-                        break;
-                    }
-                } else if (t->buffer == NULL) {
-                    if (ggml_backend_view_init(t) != GGML_STATUS_SUCCESS) {
-                        t_failed = t;
-                        break;
-                    }
-                }
-            } else {
-                if (t->view_src != NULL && t->buffer == NULL) {
-                    // view of a pre-allocated tensor
-                    if (ggml_backend_view_init(t) != GGML_STATUS_SUCCESS) {
-                        t_failed = t;
-                        break;
-                    }
+            if (t->data == NULL && t->view_src == NULL) {
+                if (ggml_tallocr_alloc(&tallocr, t) != GGML_STATUS_SUCCESS) {
+                    t_failed = t;
+                    break;
                 }
             }
         }
@@ -144,6 +131,19 @@ static ggml_backend_buffer_t ggml_backend_buft_alloc_buffer_n_default(ggml_backe
         }
 
         buffers.push_back(buffer);
+    }
+
+    for (int j = 0; j < n_tensors; j++) {
+        struct ggml_tensor * t = tensors[j];
+        if (t->view_src != NULL && t->buffer == NULL) {
+            if (ggml_backend_view_init(t) != GGML_STATUS_SUCCESS) {
+                GGML_LOG_ERROR("%s: failed to initialize view tensor %s\n", __func__, t->name);
+                for (ggml_backend_buffer_t b : buffers) {
+                    ggml_backend_buffer_free(b);
+                }
+                return NULL;
+            }
+        }
     }
 
     if (buffers.empty()) {
