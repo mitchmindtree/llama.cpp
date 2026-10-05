@@ -313,6 +313,8 @@ private:
     // populated when cparams.output_layer_inp[il] is true
     std::vector<buffer_view<float>> embd_layer_inp;
     std::vector<int32_t> embd_batch_idxs; // extracted index -> original batch index
+    // nextn layout the buffers were last filled in; cparams describes the next evaluation
+    bool embd_nextn_masked_output = false;
 
     struct sampling_info {
         // !samplers.empty() to check if any samplers are active
